@@ -14,16 +14,20 @@ class AuthController extends Controller
     public function register(Request $request)
     {
         $validated = $request->validate([
-            'fullname' => 'required|string',
-            'username' => 'required|string',
+            'fullname' => 'required|string|max:255',
+            'username' => 'nullable|string|max:255',
             'phone' => [
                 'required',
                 'regex:/^[0-9]+$/',
                 'min:10',
-                'max:15',
+                'max:20',
             ],
-            'email' => 'required|email',
+            'email' => 'required|email|max:255|unique:users,email',
             'password' => 'required|min:8',
+        ], [
+            'email.unique' => 'Email ini sudah terdaftar. Silakan gunakan email lain atau langsung masuk (login).',
+            'phone.regex' => 'Format nomor telepon hanya boleh berisi angka.',
+            'password.min' => 'Password minimal terdiri dari 8 karakter.',
         ]);
 
         $user = User::create([
@@ -31,31 +35,19 @@ class AuthController extends Controller
             'email' => $validated["email"],
             'phone' => $validated["phone"],
             'password' => Hash::make($validated["password"]),
+            'role' => 'analyst',
         ]);
-
-        if (!$user) {
-            return response()->json([
-                'status' => 'failed',
-                'message' => 'Registrasi gagal!',
-                'user' => [
-                    'id' => $user->id,
-                    'name' => $user->name,
-                    'email' => $user->email,
-                    'role' => $user->role,
-                ]
-            ]);
-        }
 
         return response()->json([
             'status' => 'success',
-            'message' => 'Registrasi berhasil!',
+            'message' => 'Registrasi berhasil! Silakan login.',
             'user' => [
                 'id' => $user->id,
                 'name' => $user->name,
                 'email' => $user->email,
-                'role' => $user->role,
+                'role' => $user->role ?? 'analyst',
             ]
-        ]);
+        ], 201);
     }
 
     public function login(Request $request)
