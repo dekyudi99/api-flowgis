@@ -16,24 +16,16 @@ class AuthController extends Controller
         $validated = $request->validate([
             'fullname' => 'required|string|max:255',
             'username' => 'nullable|string|max:255',
-            'phone' => [
-                'required',
-                'regex:/^[0-9]+$/',
-                'min:10',
-                'max:20',
-            ],
             'email' => 'required|email|max:255|unique:users,email',
             'password' => 'required|min:8',
         ], [
             'email.unique' => 'Email ini sudah terdaftar. Silakan gunakan email lain atau langsung masuk (login).',
-            'phone.regex' => 'Format nomor telepon hanya boleh berisi angka.',
             'password.min' => 'Password minimal terdiri dari 8 karakter.',
         ]);
 
         $user = User::create([
             'name' => $validated["fullname"],
             'email' => $validated["email"],
-            'phone' => $validated["phone"],
             'password' => Hash::make($validated["password"]),
             'role' => 'analyst',
         ]);
