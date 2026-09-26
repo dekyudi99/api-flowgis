@@ -1,0 +1,49 @@
+services:
+  db:
+    image: postgis/postgis:15-3.3
+    container_name: postgis_flowgis
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=rahasia
+      - POSTGRES_DB=flowgis_business_process
+    ports:
+      - "5432:5432"
+    networks:
+      - flowgis_network
+    volumes:
+      - postgis_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  pgadmin:
+    image: dpage/pgadmin4:8.5
+    container_name: pgadmin_flowgis
+    ports:
+      - "8500:80"
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@gis.com
+      - PGADMIN_DEFAULT_PASSWORD=rahasia
+    networks:
+      - flowgis_network
+    restart: unless-stopped
+
+  laravel_app:
+    build:
+      context: ./flowgis-business-process
+      dockerfile: Dockerfile
+    container_name: flowgis-business-process
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./flowgis-business-process/.env
+    volumes:
+      - ./flowgis-business-process:/var/www/html
+      - ./flowgis-business-process/php-custom.ini:/usr/local/etc/php/conf.d/php-custom.ini
+      - /var/www/html/vendor
+    command: php artisan serve --host=0.0.0.0 --port=8000 --no-reload
+    networks:
+      - flowgis_network
+
+networks:
+  flowgis_network:
+    driver: bridge
+    name: flowgis_network
