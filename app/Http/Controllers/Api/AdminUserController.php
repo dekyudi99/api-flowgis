@@ -22,8 +22,7 @@ class AdminUserController extends Controller
                 $search = $request->search;
                 $query->where(function ($q) use ($search) {
                     $q->where('name', 'ilike', "%{$search}%")
-                      ->orWhere('email', 'ilike', "%{$search}%")
-                      ->orWhere('phone', 'ilike', "%{$search}%");
+                      ->orWhere('email', 'ilike', "%{$search}%");
                 });
             }
 
@@ -31,7 +30,7 @@ class AdminUserController extends Controller
                 $query->where('role', $request->role);
             }
 
-            $users = $query->select(['id', 'name', 'email', 'phone', 'role', 'created_at'])
+            $users = $query->select(['id', 'name', 'email', 'role', 'created_at'])
                 ->orderBy('created_at', 'desc')
                 ->get();
 
@@ -40,7 +39,6 @@ class AdminUserController extends Controller
                 $defaultAdmin = User::create([
                     'name'     => 'Administrator FlowGIS',
                     'email'    => 'admin@flowgis.com',
-                    'phone'    => '081234567890',
                     'password' => Hash::make('password123'),
                     'role'     => 'admin',
                 ]);
@@ -69,7 +67,6 @@ class AdminUserController extends Controller
             $validated = $request->validate([
                 'name'     => 'required|string|max:255',
                 'email'    => 'required|email|unique:users,email',
-                'phone'    => 'nullable|string|max:20',
                 'password' => 'required|string|min:6',
                 'role'     => 'required|string|in:admin,analyst,user',
             ]);
@@ -77,7 +74,6 @@ class AdminUserController extends Controller
             $user = User::create([
                 'name'     => $validated['name'],
                 'email'    => $validated['email'],
-                'phone'    => $validated['phone'] ?? null,
                 'password' => Hash::make($validated['password']),
                 'role'     => $validated['role'],
             ]);
@@ -89,7 +85,6 @@ class AdminUserController extends Controller
                     'id'         => $user->id,
                     'name'       => $user->name,
                     'email'      => $user->email,
-                    'phone'      => $user->phone,
                     'role'       => $user->role,
                     'created_at' => $user->created_at,
                 ]
@@ -157,14 +152,12 @@ class AdminUserController extends Controller
             $validated = $request->validate([
                 'name'     => 'required|string|max:255',
                 'email'    => 'required|email|unique:users,email,' . $id,
-                'phone'    => 'nullable|string|max:20',
                 'role'     => 'nullable|string|in:admin,analyst,user',
                 'password' => 'nullable|string|min:6',
             ]);
 
             $user->name  = $validated['name'];
             $user->email = $validated['email'];
-            if (isset($validated['phone'])) $user->phone = $validated['phone'];
             if (isset($validated['role']))  $user->role  = $validated['role'];
             if (!empty($validated['password'])) {
                 $user->password = Hash::make($validated['password']);
@@ -179,7 +172,6 @@ class AdminUserController extends Controller
                     'id'    => $user->id,
                     'name'  => $user->name,
                     'email' => $user->email,
-                    'phone' => $user->phone,
                     'role'  => $user->role,
                 ]
             ]);
