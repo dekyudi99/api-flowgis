@@ -22,9 +22,12 @@ return [
     ],
 
     'astragis' => [
-        'base_url'     => str_replace(':8001', ':8000', env('ASTRAGIS_BASE_URL', 'http://fastapi_backend:8000')),
-        'api_key'      => env('ASTRAGIS_API_KEY', 'agis_sk_flowgis_production_key_2026'),
-        'workspace_id' => env('ASTRAGIS_WORKSPACE_ID', '7'),
+        'base_url'       => env('ASTRAGIS_BASE_URL', 'http://geoserver-microservice:8001'),
+        'api_version'    => env('ASTRAGIS_API_VERSION', 'v1'),
+        'api_key'        => env('ASTRAGIS_API_KEY'),
+        'workspace_name' => env('ASTRAGIS_WORKSPACE_NAME'),
+        'workspace_id'   => env('ASTRAGIS_WORKSPACE_ID'),
+        'timeout'        => (int) env('ASTRAGIS_TIMEOUT', 180),
     ],
 
     'postmark' => [

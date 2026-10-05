@@ -8,6 +8,7 @@ use App\Models\Analysis;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use App\Services\AstraGisService;
 
 class AnalysisController extends Controller
 {
@@ -59,6 +60,8 @@ class AnalysisController extends Controller
             'aoi_id'          => 'nullable|exists:aois,id',
             'geometry'        => 'nullable',
             'aoi_type'        => 'nullable|string',
+            'layer_names'     => 'sometimes|array|min:1|max:7',
+            'layer_names.*'   => 'required|string|in:FloodRisk,Rainfall,Elevation,Distance,TPI,NDVI,NDWI',
         ]);
 
         $geometry = $validated['geometry'] ?? null;
@@ -262,6 +265,8 @@ class AnalysisController extends Controller
                     'legends'       => $resData['legends'] ?? null,
                     'statistics'    => $resData['statistics'] ?? null,
                     'download_url'  => $resData['download_url'] ?? null,
+                    'component_exports' => $resData['component_exports'] ?? [],
+                    'saved_layers'  => [],
                     'component'     => $componentName,
                     'aoi_id'        => $aoiId,
                     'geometry'      => $geometry,
@@ -283,6 +288,8 @@ class AnalysisController extends Controller
                     'maps'          => $resData['maps'] ?? null, // URL Tile GEE langsung untuk Leaflet
                     'legends'       => $resData['legends'] ?? null,
                     'statistics'    => $resData['statistics'] ?? null,
+                    'component_exports' => $resData['component_exports'] ?? [],
+                    'saved_layers'  => [],
                     'is_saved'      => false,
                 ]
             ], 200);
@@ -314,7 +321,12 @@ class AnalysisController extends Controller
             return response()->json(['message' => 'Project not found or unauthorized.'], 404);
         }
 
-        $analysisId = $request->input('analysis_id');
+        $validated = $request->validate([
+            'analysis_id' => 'required|integer',
+            'components' => 'sometimes|array|max:6',
+            'components.*' => 'required|string|in:Rainfall,Elevation,Distance,TPI,NDVI,NDWI',
+        ]);
+        $analysisId = $validated['analysis_id'];
         $analysisQuery = Analysis::where('project_id', $project->id);
         if ($analysisId) {
             $analysisQuery->where('id', $analysisId);
@@ -328,189 +340,289 @@ class AnalysisController extends Controller
         $statsData = is_array($analysis->statistics) ? $analysis->statistics : (json_decode($analysis->statistics, true) ?? []);
         $downloadUrl = $analysis->file_path ?? ($statsData['download_url'] ?? null);
 
-        // Jika sudah pernah disimpan sebelumnya ke AstraGIS, langsung kembalikan wms_layer
-        if (!empty($statsData['wms_layer'])) {
+        $astragis = app(AstraGisService::class);
+        $sldXml = $statsData['style_sld'] ?? null;
+        $componentName = $statsData['component'] ?? str_replace('component_', '', $analysis->analysis_type);
+        $technicalComponent = preg_replace('/[^a-zA-Z0-9_-]/', '_', $componentName);
+        $layerName = 'analysis_' . $technicalComponent . '_' . $analysis->id;
+        $analysisParams = is_array($analysis->parameters) ? $analysis->parameters : (json_decode($analysis->parameters, true) ?? []);
+        $selectedComponents = array_values(array_unique($validated['components'] ?? []));
+        $isFloodRisk = $analysis->analysis_type === 'flood_risk';
+        $savedLayers = is_array($statsData['saved_layers'] ?? null) ? $statsData['saved_layers'] : [];
+        $componentExports = is_array($statsData['component_exports'] ?? null) ? $statsData['component_exports'] : [];
+
+        if (!$isFloodRisk && !empty($statsData['wms_layer'])) {
             return response()->json([
                 'message' => 'Analysis result has already been saved to project.',
-                'data'    => [
-                    'wms_layer' => $statsData['wms_layer'],
-                    'is_saved'  => true
-                ]
+                'data' => ['wms_layer' => $statsData['wms_layer'], 'is_saved' => true],
             ], 200);
         }
 
-        if (empty($downloadUrl)) {
+        $pendingComponents = array_values(array_filter(
+            $selectedComponents,
+            fn ($component) => empty($savedLayers[$component])
+        ));
+        if ($pendingComponents !== [] && !$isFloodRisk) {
+            return response()->json(['message' => 'Selected component exports are unavailable for this analysis.'], 422);
+        }
+
+        $needsMainLayer = empty($statsData['wms_layer']);
+        if ($needsMainLayer && empty($downloadUrl)) {
             return response()->json(['message' => 'Download URL / GeoTIFF is not ready to be saved.'], 422);
         }
-
-        $astragisUrl = config('services.astragis.base_url', 'http://fastapi_backend:8000');
-        $apiKey = config('services.astragis.api_key', 'agis_sk_flowgis_production_key_2026');
-        $workspaceId = config('services.astragis.workspace_id', '7');
-
-        $aoiName = null;
-        if ($analysis->aoi_id) {
-            $aoiRecord = DB::table('aois')->where('id', $analysis->aoi_id)->first();
-            if ($aoiRecord && !empty($aoiRecord->name)) {
-                $aoiName = $aoiRecord->name;
-            }
+        if ($isFloodRisk && !$needsMainLayer && $pendingComponents === []) {
+            return response()->json([
+                'message' => 'Selected analysis layers have already been saved to project.',
+                'data' => [
+                    'wms_layer' => $statsData['wms_layer'] ?? null,
+                    'saved_layers' => array_intersect_key($savedLayers, array_flip($selectedComponents)),
+                    'is_saved' => true,
+                ],
+            ], 200);
         }
-        $aoiTag = $aoiName ? " ({$aoiName})" : ($analysis->aoi_id ? " (AOI #{$analysis->aoi_id})" : "");
-        $cleanTypeName = ucwords(str_replace(['component_', '_'], ['', ' '], $analysis->analysis_type));
-        $layerName = "{$cleanTypeName}{$aoiTag} - {$project->name} (#" . time() . ")";
+
+        $layerMetadata = [
+            'analysis_id'   => (int)$analysis->id,
+            'analysis_type' => $analysis->analysis_type,
+            'component'     => $componentName,
+            'aoi_id'        => $analysis->aoi_id,
+            'parameters'    => $analysis->parameters,
+        ];
+        $workspaceName = null;
+        $publishMainLayer = function (string $url) use ($astragis, $layerName, &$workspaceName, $sldXml, $layerMetadata, $analysisParams, $project, $isFloodRisk, $componentName) {
+            $layer = $astragis->publishFromUrl(
+                $url,
+                $layerName,
+                $workspaceName,
+                $sldXml,
+                $layerMetadata
+            );
+
+            if (empty($layer)) {
+                throw new \RuntimeException('AstraGIS did not return the published analysis layer.');
+            }
+
+            $layer['metadata'] = array_merge($layer['metadata'] ?? [], $layerMetadata);
+            $layer['layer_name'] = $layer['layer_name'] ?? ($layer['store_name'] ?? $layerName);
+            $layer['display_name'] = $isFloodRisk
+                ? AstraGisService::buildAnalysisDisplayName('Flood Risk', $analysisParams)
+                : ($layer['display_name'] ?? AstraGisService::buildAnalysisDisplayName($componentName, $analysisParams));
+            $layer['flowgis_project_id'] = (string) $project->id;
+
+            return $layer;
+        };
 
         try {
-            $s2sResp = Http::withHeaders([
-                'X-API-Key' => $apiKey,
-            ])->timeout(180)->post("{$astragisUrl}/s2s/publish-from-url", [
-                'workspace_id'      => (string) $workspaceId,
-                'layer_name'        => $layerName,
-                'download_url'      => $downloadUrl,
-                'client_user_id'    => (string) $userId,
-                'client_user_name'  => $user->name,
-                'client_user_email' => $user->email,
-                'style_sld'         => $statsData['style_sld'] ?? null,
-                'legends'           => $statsData['legends'] ?? null,
-                'statistics'        => $statsData['statistics'] ?? null,
-                'metadata'          => [
-                    'project_id'    => $project->id,
-                    'project_name'  => $project->name,
-                    'analysis_id'   => $analysis->id,
-                    'analysis_type' => $analysis->analysis_type,
-                    'component'     => $statsData['component'] ?? null,
-                    'aoi_id'        => $analysis->aoi_id,
-                    'aoi_name'      => $aoiName,
-                    'geometry'      => $statsData['geometry'] ?? null,
-                    'legends'       => $statsData['legends'] ?? null,
-                    'statistics'    => $statsData['statistics'] ?? null,
-                    'parameters'    => $analysis->parameters,
-                ]
-            ]);
+            $workspaceName = $astragis->getOwnedWorkspaceName();
 
-            if ($s2sResp->successful()) {
-                $publishedWmsLayer = $s2sResp->json('data');
-                $statsData['wms_layer'] = $publishedWmsLayer;
+            if ($isFloodRisk) {
+                if ($needsMainLayer) {
+                    $statsData['wms_layer'] = $publishMainLayer($downloadUrl);
+                    $statsData['flowgis_project_id'] = (string) $project->id;
+                    $analysis->statistics = $statsData;
+                    $analysis->save();
+                }
+
+                $componentResult = ['saved' => [], 'errors' => []];
+                if ($pendingComponents !== []) {
+                    $componentResult = $astragis->publishAnalysisComponents(
+                        $componentExports,
+                        $pendingComponents,
+                        (int) $analysis->id,
+                        $analysisParams,
+                        $workspaceName
+                    );
+                }
+                $savedLayers = array_merge($savedLayers, $componentResult['saved']);
+                $statsData['saved_layers'] = $savedLayers;
+                $analysis->statistics = $statsData;
+                $analysis->save();
+
+                if ($componentResult['errors'] !== []) {
+                    return response()->json([
+                        'message' => 'Some analysis layers could not be published. Successful layers were saved; retry to publish the remaining layers.',
+                        'data' => [
+                            'wms_layer' => $statsData['wms_layer'] ?? null,
+                            'saved_layers' => array_intersect_key($savedLayers, array_flip($selectedComponents)),
+                            'failed_components' => $componentResult['errors'],
+                            'is_saved' => false,
+                        ],
+                    ], 200);
+                }
+
+                return response()->json([
+                    'message' => 'Flood risk analysis successfully saved to project.',
+                    'data' => [
+                        'wms_layer' => $statsData['wms_layer'] ?? null,
+                        'saved_layers' => array_intersect_key($savedLayers, array_flip($selectedComponents)),
+                        'is_saved' => true,
+                    ],
+                ], 200);
+            }
+
+            $publishedWmsLayer = $publishMainLayer($downloadUrl);
+
+            // Keep project ownership only in FlowGIS; GeoServer API v1 has no Project entity.
+            $statsData['flowgis_project_id'] = (string) $project->id;
+            $statsData['wms_layer'] = $publishedWmsLayer;
+            $analysis->statistics = $statsData;
+            $analysis->save();
+
+            return response()->json([
+                'message' => 'Analysis result successfully saved to project.',
+                'data'    => [
+                    'wms_layer' => $publishedWmsLayer,
+                    'saved_layers' => array_intersect_key($savedLayers, array_flip($selectedComponents)),
+                    'failed_components' => [],
+                    'is_saved'  => true
+                ]
+            ], 200);
+        } catch (\Exception $e) {
+            \Log::error("AstraGIS publishFromUrl failed: " . $e->getMessage());
+            $errBody = $e->getMessage();
+            $isExpiredUrl = AstraGisService::isExpiredDownloadError($errBody);
+
+            if ($isFloodRisk && !empty($statsData['wms_layer'])) {
+                $componentResult = ['saved' => [], 'errors' => []];
+                if ($pendingComponents !== []) {
+                    try {
+                        $componentResult = $astragis->publishAnalysisComponents(
+                            $componentExports,
+                            $pendingComponents,
+                            (int) $analysis->id,
+                            $analysisParams,
+                            $workspaceName
+                        );
+                        $savedLayers = array_merge($savedLayers, $componentResult['saved']);
+                    } catch (\Exception $componentException) {
+                        \Log::error("Flood Risk component publishing failed: " . $componentException->getMessage());
+                        $componentResult['errors'] = array_fill_keys($pendingComponents, $componentException->getMessage());
+                    }
+                }
+
+                $statsData['saved_layers'] = $savedLayers;
                 $analysis->statistics = $statsData;
                 $analysis->save();
 
                 return response()->json([
-                    'message' => 'Analysis result successfully saved to project.',
-                    'data'    => [
-                        'wms_layer' => $publishedWmsLayer,
-                        'is_saved'  => true
-                    ]
+                    'message' => $componentResult['errors'] === []
+                        ? 'Flood risk analysis successfully saved to project.'
+                        : 'FloodRisk was saved, but some selected components could not be published. Retry to publish the remaining layers.',
+                    'data' => [
+                        'wms_layer' => $statsData['wms_layer'],
+                        'saved_layers' => array_intersect_key($savedLayers, array_flip($selectedComponents)),
+                        'failed_components' => $componentResult['errors'],
+                        'is_saved' => $componentResult['errors'] === [],
+                    ],
                 ], 200);
-            } else {
-                \Log::error("AstraGIS S2S publish failed [{$s2sResp->status()}]: " . $s2sResp->body());
-                $errBody = $s2sResp->body();
-                $isExpiredUrl = str_contains($errBody, '401') || str_contains($errBody, 'download_url');
+            }
 
-                // Jika URL unduhan dari GEE telah kadaluarsa (HTTP 401), coba lakukan auto-refresh via Flask
-                if ($isExpiredUrl) {
-                    $flaskUrl = config('services.flask.url');
-                    $analysisParams = is_array($analysis->parameters) ? $analysis->parameters : (json_decode($analysis->parameters, true) ?? []);
-                    $geom = $statsData['geometry'] ?? null;
-                    if (!$geom && $analysis->aoi_id) {
-                        $aoiRec = DB::table('aois')->where('id', $analysis->aoi_id)->first();
-                        if ($aoiRec) {
-                            $geom = json_decode($aoiRec->geometry);
-                        }
+            // Jika URL unduhan dari GEE telah kadaluarsa (HTTP 401), coba lakukan auto-refresh via Flask
+            if ($isExpiredUrl) {
+                $flaskUrl = config('services.flask.url');
+                $geom = $statsData['geometry'] ?? null;
+                if (!$geom && $analysis->aoi_id) {
+                    $aoiRec = DB::table('aois')->where('id', $analysis->aoi_id)->first();
+                    if ($aoiRec) {
+                        $geom = json_decode($aoiRec->geometry);
                     }
+                }
 
-                    if ($geom && $flaskUrl) {
-                        try {
-                            \Log::info("Re-computing fresh download_url from Flask for analysis ID: {$analysis->id}");
-                            $componentName = $statsData['component'] ?? str_replace('component_', '', $analysis->analysis_type);
-                            $refreshResp = Http::timeout(180000)->post("{$flaskUrl}/api/v1/compute", [
-                                'project_id'      => $project->id,
-                                'analysis_type'   => $analysis->analysis_type,
-                                'component'       => $componentName,
-                                'startDate'       => $analysisParams['start_date'] ?? null,
-                                'endDate'         => $analysisParams['end_date'] ?? null,
-                                'after_startDate' => $analysisParams['after_startDate'] ?? null,
-                                'after_endDate'   => $analysisParams['after_endDate'] ?? null,
-                                'startYear'       => $analysisParams['startYear'] ?? null,
-                                'endYear'         => $analysisParams['endYear'] ?? null,
-                                'mode'            => $analysisParams['mode'] ?? 'daily',
-                                'aoi_type'        => 'polygon',
-                                'geometry'        => $geom,
-                                'weights'         => $analysisParams['weights'] ?? [],
-                            ]);
+                if ($geom && $flaskUrl) {
+                    try {
+                        \Log::info("Re-computing fresh download_url from Flask for analysis ID: {$analysis->id}");
+                        $refreshResp = Http::timeout(180000)->post("{$flaskUrl}/api/v1/compute", [
+                            'project_id'      => $project->id,
+                            'analysis_type'   => $analysis->analysis_type,
+                            'component'       => $componentName,
+                            'startDate'       => $analysisParams['start_date'] ?? null,
+                            'endDate'         => $analysisParams['end_date'] ?? null,
+                            'after_startDate' => $analysisParams['after_startDate'] ?? null,
+                            'after_endDate'   => $analysisParams['after_endDate'] ?? null,
+                            'startYear'       => $analysisParams['startYear'] ?? null,
+                            'endYear'         => $analysisParams['endYear'] ?? null,
+                            'mode'            => $analysisParams['mode'] ?? 'daily',
+                            'aoi_type'        => 'polygon',
+                            'geometry'        => $geom,
+                            'weights'         => $analysisParams['weights'] ?? [],
+                        ]);
 
-                            if ($refreshResp->successful()) {
-                                $freshData = $refreshResp->json();
-                                $newDownloadUrl = $freshData['download_url'] ?? null;
-                                if ($newDownloadUrl) {
-                                    $statsData['download_url'] = $newDownloadUrl;
-                                    $statsData['maps'] = $freshData['maps'] ?? $statsData['maps'];
-                                    $statsData['style_sld'] = $freshData['style_sld'] ?? $statsData['style_sld'];
-                                    $analysis->file_path = $newDownloadUrl;
+                        if ($refreshResp->successful()) {
+                            $freshData = $refreshResp->json();
+                            $newDownloadUrl = $freshData['download_url'] ?? null;
+                            if ($newDownloadUrl) {
+                                $statsData['download_url'] = $newDownloadUrl;
+                                $statsData['maps'] = $freshData['maps'] ?? $statsData['maps'];
+                                $statsData['style_sld'] = $freshData['style_sld'] ?? $statsData['style_sld'];
+                                $freshExports = $freshData['component_exports'] ?? $componentExports;
+                                $statsData['component_exports'] = $freshExports;
+                                $analysis->file_path = $newDownloadUrl;
+                                $analysis->statistics = $statsData;
+                                $analysis->save();
+
+                                $publishedWmsLayer = $publishMainLayer($newDownloadUrl);
+                                $statsData['flowgis_project_id'] = (string) $project->id;
+                                $statsData['wms_layer'] = $publishedWmsLayer;
+
+                                $freshResult = ['saved' => [], 'errors' => []];
+                                if ($isFloodRisk && $pendingComponents !== []) {
+                                    $freshResult = $astragis->publishAnalysisComponents(
+                                        $freshExports,
+                                        $pendingComponents,
+                                        (int) $analysis->id,
+                                        $analysisParams,
+                                        $workspaceName
+                                    );
+                                    $savedLayers = array_merge($savedLayers, $freshResult['saved']);
+                                }
+
+                                if ($isFloodRisk) {
+                                    $componentErrors = $freshResult['errors'] ?? [];
+                                    $statsData['saved_layers'] = $savedLayers;
                                     $analysis->statistics = $statsData;
                                     $analysis->save();
-
-                                    // Coba publish ulang ke AstraGIS dengan URL baru
-                                    $retryS2s = Http::withHeaders(['X-API-Key' => $apiKey])->timeout(180)->post("{$astragisUrl}/s2s/publish-from-url", [
-                                        'workspace_id'      => (string) $workspaceId,
-                                        'layer_name'        => $layerName,
-                                        'download_url'      => $newDownloadUrl,
-                                        'client_user_id'    => (string) $userId,
-                                        'client_user_name'  => $user->name,
-                                        'client_user_email' => $user->email,
-                                        'style_sld'         => $statsData['style_sld'] ?? null,
-                                        'legends'           => $statsData['legends'] ?? null,
-                                        'statistics'        => $statsData['statistics'] ?? null,
-                                        'metadata'          => [
-                                            'project_id'    => $project->id,
-                                            'project_name'  => $project->name,
-                                            'analysis_id'   => $analysis->id,
-                                            'analysis_type' => $analysis->analysis_type,
-                                            'component'     => $statsData['component'] ?? null,
-                                            'aoi_id'        => $analysis->aoi_id,
-                                            'aoi_name'      => $aoiName,
-                                            'geometry'      => $statsData['geometry'] ?? null,
-                                            'legends'       => $statsData['legends'] ?? null,
-                                            'statistics'    => $statsData['statistics'] ?? null,
-                                            'parameters'    => $analysis->parameters,
-                                        ]
-                                    ]);
-
-                                    if ($retryS2s->successful()) {
-                                        $publishedWmsLayer = $retryS2s->json('data');
-                                        $statsData['wms_layer'] = $publishedWmsLayer;
-                                        $analysis->statistics = $statsData;
-                                        $analysis->save();
-
-                                        return response()->json([
-                                            'message' => 'Analysis result successfully refreshed and saved to project.',
-                                            'data'    => [
-                                                'wms_layer' => $publishedWmsLayer,
-                                                'is_saved'  => true
-                                            ]
-                                        ], 200);
-                                    }
+                                    return response()->json([
+                                        'message' => $componentErrors === []
+                                            ? 'Flood risk analysis successfully refreshed and saved to project.'
+                                            : 'Flood risk was saved, but some selected components could not be published. Retry to publish the remaining layers.',
+                                        'data' => [
+                                            'wms_layer' => $publishedWmsLayer,
+                                            'saved_layers' => array_intersect_key($savedLayers, array_flip($selectedComponents)),
+                                            'failed_components' => $componentErrors,
+                                            'is_saved' => !empty($publishedWmsLayer) && $componentErrors === [],
+                                        ],
+                                    ], 200);
                                 }
-                            }
-                        } catch (\Exception $recompErr) {
-                            \Log::warning("Auto-refresh download_url failed: " . $recompErr->getMessage());
-                        }
-                    }
 
-                    return response()->json([
-                        'message' => 'Berkas unduhan satelit dari Google Earth Engine telah kadaluarsa (sesi analisis lama). Silakan klik "Run Spatial Analysis" untuk memperbarui hasil sebelum menyimpan.',
-                        'is_expired' => true,
-                        'error'   => $s2sResp->json() ?? $s2sResp->body()
-                    ], 422);
+                                $analysis->statistics = $statsData;
+                                $analysis->save();
+
+                                return response()->json([
+                                    'message' => 'Analysis result successfully refreshed and saved to project.',
+                                    'data'    => [
+                                        'wms_layer' => $publishedWmsLayer,
+                                        'saved_layers' => array_intersect_key($savedLayers, array_flip($selectedComponents)),
+                                        'is_saved'  => true
+                                    ]
+                                ], 200);
+                            }
+                        }
+                    } catch (\Exception $recompErr) {
+                        \Log::warning("Auto-refresh download_url failed: " . $recompErr->getMessage());
+                    }
                 }
 
                 return response()->json([
-                    'message' => 'Gagal menyimpan layer analisis ke AstraGIS.',
-                    'error'   => $s2sResp->json() ?? $s2sResp->body()
-                ], 502);
+                    'message' => 'Berkas unduhan satelit dari Google Earth Engine telah kadaluarsa (sesi analisis lama). Silakan klik "Run Spatial Analysis" untuk memperbarui hasil sebelum menyimpan.',
+                    'is_expired' => true,
+                    'error'   => $e->getMessage()
+                ], 422);
             }
-        } catch (\Exception $e) {
-            \Log::error("Save Analysis S2S exception: " . $e->getMessage());
+
             return response()->json([
-                'message' => 'Error saving analysis layer: ' . $e->getMessage()
-            ], 500);
+                'message' => 'Gagal memublikasikan layer ke GeoServer. Periksa autentikasi API key dan status layanan GeoServer.',
+                'error'   => $e->getMessage()
+            ], 502);
         }
     }
 
@@ -559,10 +671,13 @@ class AnalysisController extends Controller
                 'parameters'    => $paramsData, 
                 'aoi'           => $aoi ? json_decode($aoi->geometry) : null,
                 'style_sld'     => $statsData['style_sld'] ?? null,
-                'wms_layer'     => $statsData['wms_layer'] ?? null,
-                'maps'          => $statsData['maps'] ?? null, // Tersedia untuk component layers
-                'legends'       => $statsData['legends'] ?? null,
-                'statistics'    => $statsData['statistics'] ?? null,
+                'wms_layer' => $statsData['wms_layer'] ?? null,
+                'maps' => $statsData['maps'] ?? null, // Tersedia untuk component layers
+                'legends' => $statsData['legends'] ?? null,
+                'statistics' => $statsData['statistics'] ?? null,
+                'component_exports' => $statsData['component_exports'] ?? [],
+                'saved_layers' => $statsData['saved_layers'] ?? [],
+                'is_saved' => !empty($statsData['wms_layer']) || !empty($statsData['saved_layers']),
             ]
         ]);
     }
@@ -602,9 +717,10 @@ class AnalysisController extends Controller
         }
 
         $projectId = $request->query('project_id');
+        $ownedProjects = Project::where('user_id', $userId);
         if ($projectId) {
             // Validasi bahwa project memang milik user ini
-            $project = Project::where('id', $projectId)->where('user_id', $userId)->first();
+            $project = (clone $ownedProjects)->where('id', $projectId)->first();
             if (!$project) {
                 return response()->json([
                     'success' => true,
@@ -612,53 +728,126 @@ class AnalysisController extends Controller
                     'pagination' => ['total' => 0, 'page' => 1, 'size' => 50, 'total_pages' => 0]
                 ]);
             }
+            $ownedProjects->where('id', $projectId);
         }
 
-        $astragisUrl = config('services.astragis.base_url', 'http://fastapi_backend:8000');
-        $apiKey = config('services.astragis.api_key', 'agis_sk_flowgis_production_key_2026');
+        $ownedProjectIds = $ownedProjects->pluck('id');
+        $ownedProjectIdValues = $ownedProjectIds->map(fn ($id) => (string) $id)->all();
+        $savedAnalyses = Analysis::whereIn('project_id', $ownedProjectIds)
+            ->get(['id', 'project_id', 'analysis_type', 'parameters', 'statistics']);
+
+        $publishedLayers = [];
+        foreach ($savedAnalyses as $savedAnalysis) {
+            $statistics = is_array($savedAnalysis->statistics)
+                ? $savedAnalysis->statistics
+                : (json_decode($savedAnalysis->statistics, true) ?? []);
+            $wmsLayer = $statistics['wms_layer'] ?? null;
+            $savedLayers = is_array($statistics['saved_layers'] ?? null) ? $statistics['saved_layers'] : [];
+            $analysisLayers = array_merge(is_array($wmsLayer) ? [$wmsLayer] : [], array_values($savedLayers));
+
+            foreach ($analysisLayers as $publishedLayer) {
+                $metadata = $publishedLayer['metadata'] ?? [];
+                $metadata['analysis_id'] = (int) ($metadata['analysis_id'] ?? $savedAnalysis->id);
+                $metadata['analysis_type'] = $metadata['analysis_type'] ?? $savedAnalysis->analysis_type;
+                $metadata['parameters'] = $metadata['parameters'] ?? $savedAnalysis->parameters;
+                $displayName = $metadata['display_name'] ?? null;
+                $componentName = $metadata['component'] ?? null;
+                $baseName = $componentName
+                    ? (strtolower($componentName) === 'flood_risk' ? 'Flood Risk' : $componentName)
+                    : ($savedAnalysis->analysis_type === 'flood_risk' ? 'Flood Risk' : 'Analysis');
+                $displayName = AstraGisService::buildAnalysisDisplayName($baseName, (array) $savedAnalysis->parameters);
+                $metadata['display_name'] = $displayName;
+                $publishedLayers[] = [
+                    'project_id' => (string) $savedAnalysis->project_id,
+                    'analysis_type' => $metadata['analysis_type'],
+                    'parameters' => $metadata['parameters'],
+                    'metadata' => $metadata,
+                    'workspace_name' => $publishedLayer['workspace_name'] ?? null,
+                    'layer_names' => array_values(array_filter([
+                        $publishedLayer['layer_name'] ?? null,
+                        $publishedLayer['table_name'] ?? null,
+                        $publishedLayer['store_name'] ?? null,
+                        $publishedLayer['geoserver_name'] ?? null,
+                    ])),
+                ];
+            }
+        }
 
         try {
-            $response = Http::withHeaders([
-                'X-API-Key' => $apiKey,
-            ])->timeout(15)->get("{$astragisUrl}/s2s/layers", [
-                'client_user_id' => $userId,
-                'page' => $request->query('page', 1),
-                'size' => $request->query('size', 100),
+            $astragis = app(AstraGisService::class);
+            $resJson = $astragis->getLayers([
+                'layer_type' => $request->query('layer_type'),
             ]);
 
-            if ($response->failed()) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Gagal mengambil layer dari AstraGIS.',
-                    'error'   => $response->json() ?? $response->body()
-                ], $response->status());
-            }
-
-            $resJson = $response->json();
             $items = $resJson['data'] ?? [];
 
             // Normalisasi metadata: unpack metadata.extra agar project_id, aoi_id dsb dapat diakses langsung
-            $items = array_map(function($layer) {
+            $items = array_map(function($layer) use ($publishedLayers, $projectId) {
+                $matchedPublishedLayer = null;
                 if (isset($layer['metadata']['extra']) && is_array($layer['metadata']['extra'])) {
                     $layer['metadata'] = array_merge($layer['metadata']['extra'], $layer['metadata']);
                 }
+
+                foreach ($publishedLayers as $publishedLayer) {
+                    if ($projectId && $publishedLayer['project_id'] !== (string) $projectId) {
+                        continue;
+                    }
+
+                    $layerWorkspace = $layer['workspace_name'] ?? null;
+                    $workspaceMatches = !$publishedLayer['workspace_name']
+                        || $publishedLayer['workspace_name'] === $layerWorkspace;
+                    $layerNames = array_filter([
+                        $layer['layer_name'] ?? null,
+                        $layer['table_name'] ?? null,
+                        $layer['store_name'] ?? null,
+                        $layer['geoserver_name'] ?? null,
+                    ]);
+                    $nameMatches = array_intersect($publishedLayer['layer_names'], $layerNames) !== [];
+
+                    if ($workspaceMatches && $nameMatches) {
+                        $layer['metadata'] = array_merge($layer['metadata'] ?? [], $publishedLayer['metadata'], [
+                            'project_id' => $publishedLayer['project_id'],
+                            'analysis_type' => $publishedLayer['analysis_type'],
+                            'parameters' => $publishedLayer['parameters'],
+                        ]);
+                        $identifier = AstraGisService::resolveLayerIdentifier($layer);
+                        if ($identifier !== null) {
+                            $layer['id'] = $identifier;
+                        }
+                        $layer['display_name'] = $publishedLayer['metadata']['display_name']
+                            ?? $layer['display_name'] ?? $layer['title'] ?? $layer['layer_name'];
+                        $layer['project_id'] = $publishedLayer['project_id'];
+                        $matchedPublishedLayer = $publishedLayer;
+                        break;
+                    }
+                }
+
+                if ($matchedPublishedLayer) {
+                    $identifier = AstraGisService::resolveLayerIdentifier($layer);
+                    if ($identifier !== null) {
+                        $layer['id'] = $identifier;
+                        $layer['display_name'] = $matchedPublishedLayer['metadata']['display_name']
+                            ?? $layer['display_name'] ?? $layer['title'] ?? $layer['layer_name'];
+                    }
+                }
+
                 return $layer;
             }, $items);
 
-            // Filter ketat berdasarkan project_id agar layer project lain tidak muncul
-            if ($projectId) {
-                $items = array_values(array_filter($items, function($layer) use ($projectId) {
-                    $meta = $layer['metadata'] ?? [];
-                    $pid = $meta['project_id'] ?? ($meta['extra']['project_id'] ?? null);
-                    return $pid !== null && (string)$pid === (string)$projectId;
-                }));
-                $resJson['data'] = $items;
-                if (isset($resJson['pagination'])) {
-                    $resJson['pagination']['total'] = count($items);
+            // Hanya kembalikan layer yang terhubung ke proyek milik pengguna ini.
+            $items = array_values(array_filter($items, function ($layer) use ($projectId, $ownedProjectIdValues) {
+                $meta = $layer['metadata'] ?? [];
+                $pid = $layer['project_id'] ?? $meta['project_id'] ?? ($meta['extra']['project_id'] ?? null);
+
+                if ($pid === null || !in_array((string) $pid, $ownedProjectIdValues, true)) {
+                    return false;
                 }
-            } else {
-                $resJson['data'] = $items;
-            }
+
+                return !$projectId || (string) $pid === (string) $projectId;
+            }));
+
+            $resJson['data'] = $items;
+            $resJson['total'] = count($items);
 
             return response()->json($resJson);
         } catch (\Exception $e) {
@@ -681,17 +870,14 @@ class AnalysisController extends Controller
             return response()->json(['message' => 'Unauthenticated.'], 401);
         }
 
-        $astragisUrl = config('services.astragis.base_url', 'http://fastapi_backend:8000');
-        $apiKey = config('services.astragis.api_key', 'agis_sk_flowgis_production_key_2026');
-
         try {
-            $response = Http::withHeaders(['X-API-Key' => $apiKey])
-                ->timeout(15)
-                ->get("{$astragisUrl}/s2s/layer-groups", [
-                    'client_user_id' => $userId,
-                ]);
-
-            return response()->json($response->json(), $response->status());
+            $astragis = app(AstraGisService::class);
+            $groups = $astragis->getLayerGroupsForOwnedWorkspace();
+            return response()->json([
+                'success' => true,
+                'total' => count($groups),
+                'data' => $groups,
+            ], 200);
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
@@ -717,23 +903,19 @@ class AnalysisController extends Controller
             'layer_ids.*'   => 'required',
         ]);
 
-        $astragisUrl = config('services.astragis.base_url', 'http://fastapi_backend:8000');
-        $apiKey = config('services.astragis.api_key', 'agis_sk_flowgis_production_key_2026');
-        $workspaceId = config('services.astragis.workspace_id', '7');
-
         try {
-            $response = Http::withHeaders(['X-API-Key' => $apiKey])
-                ->timeout(30)
-                ->post("{$astragisUrl}/s2s/layer-groups", [
-                    'workspace_id'   => (string) $workspaceId,
-                    'name'           => $validated['name'],
-                    'title'          => $validated['title'] ?? $validated['name'],
-                    'abstract_text'  => $validated['abstract_text'] ?? '',
-                    'client_user_id' => $userId,
-                    'layer_ids'      => $validated['layer_ids'],
-                ]);
+            $astragis = app(AstraGisService::class);
+            $workspaceName = $astragis->getOwnedWorkspaceName();
+            $res = $astragis->createLayerGroup([
+                'workspace_name' => $workspaceName,
+                'workspace_id'   => $workspaceName,
+                'name'           => $validated['name'],
+                'title'          => $validated['title'] ?? $validated['name'],
+                'abstract_text'  => $validated['abstract_text'] ?? '',
+                'layer_ids'      => array_map('strval', $validated['layer_ids']),
+            ]);
 
-            return response()->json($response->json(), $response->status());
+            return response()->json($res, 201);
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
@@ -745,15 +927,10 @@ class AnalysisController extends Controller
      */
     public function deleteUserLayerGroup(Request $request, $id)
     {
-        $astragisUrl = config('services.astragis.base_url', 'http://fastapi_backend:8000');
-        $apiKey = config('services.astragis.api_key', 'agis_sk_flowgis_production_key_2026');
-
         try {
-            $response = Http::withHeaders(['X-API-Key' => $apiKey])
-                ->timeout(15)
-                ->delete("{$astragisUrl}/s2s/layer-groups/{$id}");
-
-            return response()->json($response->json(), $response->status());
+            $astragis = app(AstraGisService::class);
+            $success = $astragis->deleteLayerGroup((string) $id);
+            return response()->json(['success' => $success, 'message' => 'Layer group deleted'], $success ? 200 : 500);
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
@@ -765,18 +942,10 @@ class AnalysisController extends Controller
      */
     public function deleteUserLayer(Request $request, $id)
     {
-        $userId = (string)($request->user() ? $request->user()->id : 1);
-        $astragisUrl = config('services.astragis.base_url', 'http://fastapi_backend:8000');
-        $apiKey = config('services.astragis.api_key', 'agis_sk_flowgis_production_key_2026');
-
         try {
-            $response = Http::withHeaders(['X-API-Key' => $apiKey])
-                ->timeout(20)
-                ->delete("{$astragisUrl}/s2s/layers/{$id}", [
-                    'client_user_id' => $userId,
-                ]);
-
-            return response()->json($response->json(), $response->status());
+            $astragis = app(AstraGisService::class);
+            $success = $astragis->deleteLayer((string) $id);
+            return response()->json(['success' => $success, 'message' => 'Layer deleted'], $success ? 200 : 500);
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
@@ -788,29 +957,22 @@ class AnalysisController extends Controller
      */
     public function updateUserLayerGroup(Request $request, $id)
     {
-        $userId = (string)($request->user() ? $request->user()->id : 1);
         $validated = $request->validate([
             'title'         => 'nullable|string|max:150',
             'abstract_text' => 'nullable|string',
             'layer_ids'     => 'nullable|array|min:1',
         ]);
 
-        $astragisUrl = config('services.astragis.base_url', 'http://fastapi_backend:8000');
-        $apiKey = config('services.astragis.api_key', 'agis_sk_flowgis_production_key_2026');
-
         try {
-            $payload = [
-                'client_user_id' => $userId,
-            ];
+            $payload = [];
             if (isset($validated['title'])) $payload['title'] = $validated['title'];
             if (isset($validated['abstract_text'])) $payload['abstract_text'] = $validated['abstract_text'];
-            if (isset($validated['layer_ids'])) $payload['layer_ids'] = $validated['layer_ids'];
+            if (isset($validated['layer_ids'])) $payload['layer_ids'] = array_map('strval', $validated['layer_ids']);
 
-            $response = Http::withHeaders(['X-API-Key' => $apiKey])
-                ->timeout(30)
-                ->put("{$astragisUrl}/s2s/layer-groups/{$id}", $payload);
+            $astragis = app(AstraGisService::class);
+            $res = $astragis->updateLayerGroup((string) $id, $payload);
 
-            return response()->json($response->json(), $response->status());
+            return response()->json($res, 200);
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }

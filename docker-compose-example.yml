@@ -35,6 +35,9 @@ services:
       - "8000:8000"
     env_file:
       - ./flowgis-business-process/.env
+    environment:
+      ASTRAGIS_BASE_URL: http://geoserver-microservice:8001
+      ASTRAGIS_API_VERSION: v1
     volumes:
       - ./flowgis-business-process:/var/www/html
       - ./flowgis-business-process/php-custom.ini:/usr/local/etc/php/conf.d/php-custom.ini
@@ -42,8 +45,12 @@ services:
     command: php artisan serve --host=0.0.0.0 --port=8000 --no-reload
     networks:
       - flowgis_network
+      - network_gis
 
 networks:
   flowgis_network:
     driver: bridge
     name: flowgis_network
+  network_gis:
+    name: network_gis
+    external: true

@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\DB;
 
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
+use App\Services\AstraGisService;
 
 class GeosocialController extends Controller
 {
@@ -85,78 +86,51 @@ class GeosocialController extends Controller
             $name = $request->input('name');
             $layerKeySlug = 'geosocial:' . Str::slug($name, '_');
 
-            $fastApiBase = rtrim(config('services.astragis.base_url', env('ASTRAGIS_BASE_URL', 'http://fastapi_backend:8000')), '/');
-            // Pastikan jika ada port 8001 internal diganti ke port 8000
-            $fastApiBase = str_replace(':8001', ':8000', $fastApiBase);
-            $apiKey = config('services.astragis.api_key', env('ASTRAGIS_API_KEY'));
-            $workspaceId = config('services.astragis.workspace_id', env('ASTRAGIS_WORKSPACE_ID', 'geosocial'));
-
             $ext = strtolower($file->getClientOriginalExtension());
             $isRaster = in_array($ext, ['tif', 'tiff']);
-            $actionEndpoint = $isRaster ? "s2s/publish" : "s2s/publish-vector";
 
-            // Prioritaskan endpoint container internal
-            $endpoints = array_values(array_unique([
-                "http://fastapi_backend:8000/{$actionEndpoint}",
-                "{$fastApiBase}/{$actionEndpoint}",
-            ]));
-
+            $astragis = app(AstraGisService::class);
+            $fileHandle = fopen($file->getRealPath(), 'r');
             $publishedData = null;
             $lastError = null;
 
-            set_time_limit(300);
-            foreach ($endpoints as $endpoint) {
-                try {
-                    $req = Http::timeout(300);
-                    if ($apiKey) {
-                        $req = $req->withHeaders(['X-API-Key' => $apiKey]);
-                    }
-
-                    $fileHandle = fopen($file->getRealPath(), 'r');
-                    $res = $req->attach(
-                        'file',
+            try {
+                if ($isRaster) {
+                    $publishedData = $astragis->publishRaster(
                         $fileHandle,
-                        $file->getClientOriginalName()
-                    )->post($endpoint, [
-                        'layer_name'     => $name,
-                        'name'           => $name,
-                        'workspace_id'   => $workspaceId,
-                        'workspace_name' => 'geosocial',
-                        'client_user_id' => (string) ($request->user() ? $request->user()->id : 'admin'),
-                    ]);
-                    if (is_resource($fileHandle)) {
-                        fclose($fileHandle);
-                    }
-
-                    if ($res->successful()) {
-                        $publishedData = $res->json();
-                        // Ekstrak data jika format respon dibungkus dalam key 'data'
-                        if (isset($publishedData['data']) && is_array($publishedData['data'])) {
-                            $publishedData = array_merge($publishedData, $publishedData['data']);
-                        }
-                        break;
-                    } else {
-                        $lastError = $res->body();
-                        // Jika respon 4xx (misal API key salah atau file format tidak didukung), jangan coba endpoint lain
-                        if ($res->status() >= 400 && $res->status() < 500) {
-                            break;
-                        }
-                    }
-                } catch (\Exception $ex) {
-                    $lastError = $ex->getMessage();
-                    continue;
+                        $file->getClientOriginalName(),
+                        $name
+                    );
+                } else {
+                    $publishedData = $astragis->publishVector(
+                        $fileHandle,
+                        $file->getClientOriginalName(),
+                        $name
+                    );
+                }
+            } catch (\Exception $ex) {
+                $lastError = $ex->getMessage();
+            } finally {
+                if (is_resource($fileHandle)) {
+                    fclose($fileHandle);
                 }
             }
 
             if (!$publishedData) {
-                \Log::error("Geosocial upload error: S2S publishing failed. Details: " . ($lastError ?: "No response from backend"));
+                \Log::error("Geosocial upload error: publishing failed via AstraGisService. Details: " . ($lastError ?: "No response from backend"));
                 return response()->json([
                     'message' => "Gagal mempublikasikan layer ke AstraGIS: " . ($lastError ?: "Koneksi ke backend GIS gagal atau waktu pemrosesan habis."),
                     'error' => $lastError
                 ], 500);
             }
 
-            $layerKey = $publishedData['layer_name'] ?? $layerKeySlug;
+            if (isset($publishedData['data']) && is_array($publishedData['data'])) {
+                $publishedData = array_merge($publishedData, $publishedData['data']);
+            }
+
+            $ws = $publishedData['workspace_name'] ?? config('services.astragis.workspace_name', 'ws_flood_92cd23');
+            $realLayerName = $publishedData['layer_name'] ?? ($publishedData['store_name'] ?? null);
+            $layerKey = $realLayerName ? (str_contains($realLayerName, ':') ? $realLayerName : "{$ws}:{$realLayerName}") : $layerKeySlug;
             $wmsUrl = $publishedData['wms_url'] ?? config('services.geoserver.wms_url', 'http://localhost:8080/geoserver/wms');
             $ext = strtolower($file->getClientOriginalExtension());
             // Semua layer spasial yang diterbitkan ke GeoServer dirender sebagai WMS oleh Leaflet
@@ -193,6 +167,10 @@ class GeosocialController extends Controller
                     'display_name' => $layer->name,
                     'type' => $layer->type,
                     'url' => $layer->url,
+                    'workspace_name' => $ws,
+                    'store_name' => $publishedData['store_name'] ?? null,
+                    'bbox' => $publishedData['bbox'] ?? null,
+                    'epsg' => $publishedData['epsg'] ?? null,
                     'is_active' => $layer->is_active,
                     'created_at' => $layer->created_at,
                     'simplification' => $publishedData['simplification'] ?? null,
@@ -257,20 +235,14 @@ class GeosocialController extends Controller
         $layer = GeosocialLayer::findOrFail($id);
         $layerKey = $layer->layer_key;
 
-        // Bersihkan tabel fisik di PostGIS dan featuretype di GeoServer via FastAPI S2S
+        // Bersihkan tabel fisik di PostGIS dan featuretype di GeoServer via Microservice
         try {
-            $fastApiBase = rtrim(config('services.astragis.base_url', env('ASTRAGIS_BASE_URL', 'http://fastapi_backend:8000')), '/');
-            $fastApiBase = str_replace(':8001', ':8000', $fastApiBase);
-            $apiKey = config('services.astragis.api_key', env('ASTRAGIS_API_KEY'));
-
+            $astragis = app(AstraGisService::class);
             $targetSlug = str_contains($layerKey, ':') ? explode(':', $layerKey)[1] : $layerKey;
-            $req = Http::timeout(15);
-            if ($apiKey) {
-                $req = $req->withHeaders(['X-API-Key' => $apiKey]);
-            }
-            $req->delete("{$fastApiBase}/s2s/layers/{$targetSlug}");
+            $ws = str_contains($layerKey, ':') ? explode(':', $layerKey)[0] : null;
+            $astragis->deleteLayer($targetSlug, $ws);
         } catch (\Exception $ex) {
-            \Log::warning("Gagal menghapus tabel spasial PostGIS di backend: " . $ex->getMessage());
+            \Log::warning("Gagal menghapus layer spasial di GeoServer via Microservice: " . $ex->getMessage());
         }
 
         $layer->delete();
@@ -443,69 +415,24 @@ class GeosocialController extends Controller
 XML;
         }
 
-        // Kirim SLD ke GeoServer
-        $geoUser = env('GEOSERVER_USER', 'admin');
-        $geoPass = env('GEOSERVER_PASS', 'rahasia');
-
-        $geoEndpoints = [
-            "http://geoserver:8080/geoserver",
-            "http://localhost:8080/geoserver",
-            "http://host.docker.internal:8080/geoserver",
-        ];
-
+        // Kirim SLD ke GeoServer via Microservice
         $appliedToGeoServer = false;
         $geoLastError = null;
 
-        foreach ($geoEndpoints as $geoBase) {
-            try {
-                // 1. Cek / buat wadah style di GeoServer
-                $checkResp = Http::withBasicAuth($geoUser, $geoPass)
-                    ->timeout(10)
-                    ->get("{$geoBase}/rest/styles/{$styleName}.json");
+        try {
+            $astragis = app(AstraGisService::class);
+            $astragis->applyStyle($layerName, $workspace, $sldXml);
+            $appliedToGeoServer = true;
+        } catch (\Exception $ex) {
+            $geoLastError = $ex->getMessage();
+            \Log::warning("Gagal menerapkan style visual di GeoServer via Microservice: " . $geoLastError);
+        }
 
-                if ($checkResp->status() === 404) {
-                    Http::withBasicAuth($geoUser, $geoPass)
-                        ->withHeaders(['Content-Type' => 'text/xml'])
-                        ->timeout(10)
-                        ->send('POST', "{$geoBase}/rest/styles", [
-                            'body' => "<style><name>{$styleName}</name><filename>{$styleName}.sld</filename></style>"
-                        ]);
-                }
-
-                // 2. Upload SLD XML
-                $uploadResp = Http::withBasicAuth($geoUser, $geoPass)
-                    ->withHeaders(['Content-Type' => 'application/vnd.ogc.sld+xml'])
-                    ->timeout(15)
-                    ->send('PUT', "{$geoBase}/rest/styles/{$styleName}", [
-                        'body' => $sldXml
-                    ]);
-
-                if ($uploadResp->successful()) {
-                    // 3. Pasang style ke layer di GeoServer
-                    $assignEndpoints = [
-                        "{$geoBase}/rest/layers/{$workspace}:{$layerName}.json",
-                        "{$geoBase}/rest/layers/{$layerName}.json",
-                    ];
-                    foreach ($assignEndpoints as $assignUrl) {
-                        Http::withBasicAuth($geoUser, $geoPass)
-                            ->withHeaders(['Content-Type' => 'application/json'])
-                            ->timeout(10)
-                            ->put($assignUrl, [
-                                'layer' => [
-                                    'defaultStyle' => [
-                                        'name' => $styleName
-                                    ]
-                                ]
-                            ]);
-                    }
-                    $appliedToGeoServer = true;
-                    break;
-                } else {
-                    $geoLastError = $uploadResp->body();
-                }
-            } catch (\Exception $ex) {
-                $geoLastError = $ex->getMessage();
-            }
+        if (!$appliedToGeoServer) {
+            return response()->json([
+                'message' => 'Gagal menerapkan style visual ke GeoServer: ' . ($geoLastError ?: 'Koneksi gagal.'),
+                'error'   => $geoLastError
+            ], 422);
         }
 
         // Simpan konfigurasi warna ke kolom legend_url
@@ -530,8 +457,8 @@ XML;
                 'layer_key'        => $layer->layer_key,
                 'style_name'       => $styleName,
                 'style_config'     => $styleConfig,
-                'geoserver_synced' => $appliedToGeoServer,
-                'error'            => $appliedToGeoServer ? null : $geoLastError,
+                'geoserver_synced' => true,
+                'updated_at'       => $styleConfig['updated_at'],
             ]
         ], 200);
     }
