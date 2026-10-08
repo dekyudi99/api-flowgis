@@ -333,19 +333,26 @@ class GeosocialController extends Controller
         $layer = GeosocialLayer::findOrFail($id);
 
         $validated = $request->validate([
-            'fill_color'   => 'nullable|string',
-            'stroke_color' => 'nullable|string',
-            'stroke_width' => 'nullable|numeric|min:0.5|max:20',
-            'fill_opacity' => 'nullable|numeric|min:0|max:1',
-            'point_size'   => 'nullable|numeric|min:1|max:50',
-            'style_sld'    => 'nullable|string',
+            'fill_color'       => 'nullable|string',
+            'stroke_color'     => 'nullable|string',
+            'stroke_width'     => 'nullable|numeric|min:0.5|max:20',
+            'fill_opacity'     => 'nullable|numeric|min:0|max:1',
+            'stroke_opacity'   => 'nullable|numeric|min:0|max:1',
+            'point_size'       => 'nullable|numeric|min:1|max:50',
+            'mark'             => 'nullable|string|in:circle,square,triangle,star,cross,x',
+            'stroke_dasharray' => 'nullable|string',
+            'style_sld'        => 'nullable|string',
         ]);
 
-        $fillColor   = $validated['fill_color'] ?? '#0d9488';
-        $strokeColor = $validated['stroke_color'] ?? '#0f766e';
-        $strokeWidth = $validated['stroke_width'] ?? 2;
-        $fillOpacity = $validated['fill_opacity'] ?? 0.65;
-        $pointSize   = $validated['point_size'] ?? 8;
+        $fillColor     = $validated['fill_color'] ?? '#0d9488';
+        $strokeColor   = $validated['stroke_color'] ?? '#0f766e';
+        $strokeWidth   = $validated['stroke_width'] ?? 2;
+        $fillOpacity   = $validated['fill_opacity'] ?? 0.65;
+        $strokeOpacity = $validated['stroke_opacity'] ?? 1.0;
+        $pointSize     = $validated['point_size'] ?? 8;
+        $mark          = $validated['mark'] ?? 'circle';
+        $strokeDash    = $validated['stroke_dasharray'] ?? null;
+        $dashXml       = $strokeDash ? "<CssParameter name=\"stroke-dasharray\">{$strokeDash}</CssParameter>" : "";
 
         // Parse workspace & nama layer dari layer_key (misal: "ws_30cad3c4:vec_s2s_vec_vvvdfgd_cb6b8b4d" atau "geosocial:geo_main_river")
         $parts = explode(':', $layer->layer_key);
@@ -382,19 +389,22 @@ class GeosocialController extends Controller
             <Stroke>
               <CssParameter name="stroke">{$strokeColor}</CssParameter>
               <CssParameter name="stroke-width">{$strokeWidth}</CssParameter>
+              <CssParameter name="stroke-opacity">{$strokeOpacity}</CssParameter>
+              {$dashXml}
             </Stroke>
           </PolygonSymbolizer>
           <LineSymbolizer>
             <Stroke>
               <CssParameter name="stroke">{$strokeColor}</CssParameter>
               <CssParameter name="stroke-width">{$strokeWidth}</CssParameter>
-              <CssParameter name="stroke-opacity">{$fillOpacity}</CssParameter>
+              <CssParameter name="stroke-opacity">{$strokeOpacity}</CssParameter>
+              {$dashXml}
             </Stroke>
           </LineSymbolizer>
           <PointSymbolizer>
             <Graphic>
               <Mark>
-                <WellKnownName>circle</WellKnownName>
+                <WellKnownName>{$mark}</WellKnownName>
                 <Fill>
                   <CssParameter name="fill">{$fillColor}</CssParameter>
                   <CssParameter name="fill-opacity">{$fillOpacity}</CssParameter>
@@ -402,6 +412,7 @@ class GeosocialController extends Controller
                 <Stroke>
                   <CssParameter name="stroke">{$strokeColor}</CssParameter>
                   <CssParameter name="stroke-width">{$strokeWidth}</CssParameter>
+                  <CssParameter name="stroke-opacity">{$strokeOpacity}</CssParameter>
                 </Stroke>
               </Mark>
               <Size>{$pointSize}</Size>
@@ -440,13 +451,16 @@ XML;
         $layer->save();
 
         $styleConfig = [
-            'fill_color'   => $fillColor,
-            'stroke_color' => $strokeColor,
-            'stroke_width' => (float)$strokeWidth,
-            'fill_opacity' => (float)$fillOpacity,
-            'point_size'   => (float)$pointSize,
-            'style_name'   => $styleName,
-            'updated_at'   => now()->toISOString(),
+            'fill_color'       => $fillColor,
+            'stroke_color'     => $strokeColor,
+            'stroke_width'     => (float)$strokeWidth,
+            'fill_opacity'     => (float)$fillOpacity,
+            'stroke_opacity'   => (float)$strokeOpacity,
+            'point_size'       => (float)$pointSize,
+            'mark'             => $mark,
+            'stroke_dasharray' => $strokeDash,
+            'style_name'       => $styleName,
+            'updated_at'       => now()->toISOString(),
         ];
 
         return response()->json([
