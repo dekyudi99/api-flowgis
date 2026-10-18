@@ -14,6 +14,39 @@ use App\Services\AstraGisService;
 class GeosocialController extends Controller
 {
     /**
+     * [GET] /api/geosocial/layer-groups
+     * Daftar layer group geosocial (publik, read-only) untuk peta Dashboard.
+     */
+    public function layerGroups()
+    {
+        try {
+            $groups = app(AstraGisService::class)->getLayerGroupsForOwnedWorkspace();
+
+            $data = collect($groups)
+                ->map(fn ($g) => [
+                    'id'               => $g['id'] ?? null,
+                    'name'             => $g['name'] ?? null,
+                    'title'            => $g['title'] ?? $g['name'] ?? null,
+                    'wms_url'          => $g['wms_url'] ?? null,
+                    'wms_layers_param' => $g['wms_layers_param'] ?? null,
+                    'bbox'             => $g['bbox'] ?? null,
+                    'layer_count'      => $g['layer_count'] ?? 0,
+                ])
+                ->values();
+
+            return response()->json([
+                'message' => 'Geosocial layer groups loaded successfully.',
+                'data'    => $data,
+            ], 200);
+        } catch (\Exception $e) {
+            return response()->json([
+                'message' => 'Failed to load layer groups.',
+                'error'   => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
      * [GET] /api/geosocial/layers
      * Mengambil daftar layer geosial (katalog WMS/Vector) untuk dirender secara dinamis di Leaflet.
      * Parameter ?all=true digunakan oleh Admin Dashboard untuk melihat seluruh layer.

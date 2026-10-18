@@ -684,19 +684,42 @@ class AnalysisController extends Controller
 
 
     /**
-     * [11] GET /api/projects/{id}/download download file GeoTIFF raster
+     * [11] GET /api/projects/{id}/download download file GeoTIFF raster (styled from GeoServer if available)
      */
     public function download($id)
     {
         $analysis = Analysis::where('project_id', $id)->latest()->first();
 
-        if (!$analysis || empty($analysis->file_path)) {
+        if (!$analysis) {
             return response()->json([
                 'message' => 'The download URL was not found. Please perform the analysis first.'
             ], 404);
         }
 
-        $url = $analysis->file_path;
+        $stats = is_array($analysis->statistics) ? $analysis->statistics : (json_decode($analysis->statistics, true) ?? []);
+        $mainLayer = $stats['wms_layer'] ?? null;
+
+        if ($mainLayer) {
+            try {
+                $astragis = app(AstraGisService::class);
+                $downloaded = $astragis->downloadStyledLayerGeoTiff($mainLayer);
+                return response($downloaded['content'], 200, [
+                    'Content-Type' => $downloaded['content_type'],
+                    'Content-Disposition' => 'attachment; filename="' . $downloaded['filename'] . '"',
+                    'Cache-Control' => 'no-cache, no-store, must-revalidate',
+                ]);
+            } catch (\Exception $e) {
+                \Log::warning("Failed to download styled WMS layer, falling back: " . $e->getMessage());
+            }
+        }
+
+        $url = $analysis->file_path ?? ($stats['download_url'] ?? null);
+        if (empty($url)) {
+            return response()->json([
+                'message' => 'The download URL was not found. Please perform the analysis first.'
+            ], 404);
+        }
+
         if (str_contains($url, ':5000')) {
             $url = str_replace(':5000', ':5001', $url);
         }
@@ -977,5 +1000,91 @@ class AnalysisController extends Controller
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
     }
+
+    /**
+     * Download a specific analysis result layer with GeoServer styling applied (GeoTIFF).
+     * GET /api/projects/{projectId}/layers/{layerId}/download
+     */
+    public function downloadLayer(Request $request, $projectId, $layerId)
+    {
+        $project = Project::findOrFail($projectId);
+        $astragis = app(AstraGisService::class);
+
+        // 1. Check in saved analyses for this project
+        $targetLayer = null;
+        $analyses = Analysis::where('project_id', $project->id)->latest()->get();
+        foreach ($analyses as $analysis) {
+            $stats = is_array($analysis->statistics) ? $analysis->statistics : (json_decode($analysis->statistics, true) ?? []);
+            
+            // Check in saved_layers
+            if (!empty($stats['saved_layers']) && is_array($stats['saved_layers'])) {
+                foreach ($stats['saved_layers'] as $saved) {
+                    if (
+                        (isset($saved['id']) && (string) $saved['id'] === (string) $layerId) ||
+                        (isset($saved['layer_id']) && (string) $saved['layer_id'] === (string) $layerId) ||
+                        (isset($saved['store_name']) && (string) $saved['store_name'] === (string) $layerId) ||
+                        (isset($saved['layer_name']) && (string) $saved['layer_name'] === (string) $layerId)
+                    ) {
+                        $targetLayer = $saved;
+                        break 2;
+                    }
+                }
+            }
+
+            // Check in wms_layer
+            if (!empty($stats['wms_layer']) && is_array($stats['wms_layer'])) {
+                $wms = $stats['wms_layer'];
+                if (
+                    (isset($wms['id']) && (string) $wms['id'] === (string) $layerId) ||
+                    (isset($wms['layer_id']) && (string) $wms['layer_id'] === (string) $layerId) ||
+                    (isset($wms['store_name']) && (string) $wms['store_name'] === (string) $layerId) ||
+                    (isset($wms['layer_name']) && (string) $wms['layer_name'] === (string) $layerId)
+                ) {
+                    $targetLayer = $wms;
+                    break;
+                }
+            }
+        }
+
+        // 2. Fallback: Search in AstraGIS layers catalog
+        if (!$targetLayer) {
+            try {
+                $layersResp = $astragis->getLayers(['project_id' => $project->id]);
+                $items = $layersResp['data'] ?? [];
+                foreach ($items as $item) {
+                    if (
+                        (isset($item['id']) && (string) $item['id'] === (string) $layerId) ||
+                        (isset($item['layer_id']) && (string) $item['layer_id'] === (string) $layerId) ||
+                        (isset($item['store_name']) && (string) $item['store_name'] === (string) $layerId) ||
+                        (isset($item['layer_name']) && (string) $item['layer_name'] === (string) $layerId)
+                    ) {
+                        $targetLayer = $item;
+                        break;
+                    }
+                }
+            } catch (\Exception $e) {
+                \Log::warning("AstraGIS getLayers fallback failed during download: " . $e->getMessage());
+            }
+        }
+
+        if (!$targetLayer) {
+            return response()->json(['message' => 'Layer not found or has not been saved to GeoServer.'], 404);
+        }
+
+        try {
+            $downloaded = $astragis->downloadStyledLayerGeoTiff($targetLayer);
+
+            return response($downloaded['content'], 200, [
+                'Content-Type' => $downloaded['content_type'],
+                'Content-Disposition' => 'attachment; filename="' . $downloaded['filename'] . '"',
+                'Cache-Control' => 'no-cache, no-store, must-revalidate',
+            ]);
+        } catch (\Exception $e) {
+            \Log::error("Failed to export styled GeoTIFF for layer [{$layerId}]: " . $e->getMessage());
+            return response()->json(['message' => 'Failed to export styled GeoTIFF: ' . $e->getMessage()], 500);
+        }
+    }
 }
+
+
 

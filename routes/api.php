@@ -18,6 +18,7 @@ Route::prefix('auth')->group(function () {
 Route::get('/projects/{id}/download', [AnalysisController::class, 'download']);
 
 Route::get('/geosocial/layers', [GeosocialController::class, 'index']);
+Route::get('/geosocial/layer-groups', [GeosocialController::class, 'layerGroups']);
 Route::post('/geosocial/layers/upload', [GeosocialController::class, 'uploadLayer']);
 Route::put('/geosocial/layers/{id}', [GeosocialController::class, 'update']);
 Route::patch('/geosocial/layers/{id}/toggle', [GeosocialController::class, 'toggleActive']);
@@ -89,7 +90,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/{id}/analyze', [AnalysisController::class, 'analyze']);   // Endpoint #9
         Route::post('/{id}/save-analysis', [AnalysisController::class, 'saveAnalysis']); // Simpan hasil analisis ke proyek
         Route::get('/{id}/result', [AnalysisController::class, 'result']);      // Endpoint #10
-        // Route::get('/{id}/download', [AnalysisController::class, 'download']);  // Endpoint #11
+        Route::get('/{id}/download', [AnalysisController::class, 'download']);  // Endpoint #11
+        Route::get('/{id}/layers/{layerId}/download', [AnalysisController::class, 'downloadLayer']); // Download per layer styled
     });
 
     // AstraGIS User Layers & Layer Groups Endpoints

@@ -471,4 +471,60 @@ class AstraGisService
     {
         return $this->workspaceId;
     }
+
+    /**
+     * Download styled GeoTIFF of a raster layer using GeoServer WMS GetMap.
+     */
+    public function downloadStyledLayerGeoTiff(array $layer, ?int $width = 1024, ?int $height = 1024): array
+    {
+        $ws = $layer['workspace_name'] ?? $this->workspaceName;
+        $storeName = $layer['store_name'] ?? $layer['layer_name'] ?? null;
+        if (!$storeName) {
+            throw new \InvalidArgumentException("Layer does not have a valid store_name or layer_name.");
+        }
+
+        $styleName = $layer['symbology']['style_name'] ?? ($layer['style_name'] ?? '');
+        $bbox = $layer['bbox'] ?? null;
+
+        $minx = 0; $miny = 0; $maxx = 0; $maxy = 0;
+        if (is_array($bbox)) {
+            $minx = $bbox['left'] ?? $bbox['minx'] ?? $bbox['west'] ?? ($bbox[0] ?? 0);
+            $miny = $bbox['bottom'] ?? $bbox['miny'] ?? $bbox['south'] ?? ($bbox[1] ?? 0);
+            $maxx = $bbox['right'] ?? $bbox['maxx'] ?? $bbox['east'] ?? ($bbox[2] ?? 0);
+            $maxy = $bbox['top'] ?? $bbox['maxy'] ?? $bbox['north'] ?? ($bbox[3] ?? 0);
+        }
+
+        $dims = $layer['dimensions'] ?? [];
+        $w = !empty($dims['width']) ? min((int) $dims['width'], 2048) : ($width ?: 1024);
+        $h = !empty($dims['height']) ? min((int) $dims['height'], 2048) : ($height ?: 1024);
+
+        $geoserverWms = env('GEOSERVER_INTERNAL_WMS_URL', 'http://geoserver:8080/geoserver/wms');
+        $baseUrl = explode('?', $geoserverWms)[0];
+
+        $params = [
+            'service' => 'WMS',
+            'version' => '1.1.1',
+            'request' => 'GetMap',
+            'layers'  => "{$ws}:{$storeName}",
+            'styles'  => $styleName ?: '',
+            'bbox'    => "{$minx},{$miny},{$maxx},{$maxy}",
+            'width'   => $w,
+            'height'  => $h,
+            'srs'     => 'EPSG:4326',
+            'format'  => 'image/geotiff',
+        ];
+
+        $resp = Http::timeout(60)->get($baseUrl, $params);
+        if ($resp->failed()) {
+            throw new \RuntimeException("GeoServer WMS GetMap failed [{$resp->status()}]: " . $resp->body());
+        }
+
+        $cleanTitle = preg_replace('/[^a-zA-Z0-9_-]/', '_', $layer['display_name'] ?? $storeName);
+        return [
+            'content'      => $resp->body(),
+            'content_type' => $resp->header('Content-Type') ?: 'image/geotiff',
+            'filename'     => "{$cleanTitle}.tif",
+        ];
+    }
 }
+
