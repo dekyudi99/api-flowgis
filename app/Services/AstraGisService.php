@@ -404,7 +404,7 @@ class AstraGisService
             return $workspaces[0];
         }
 
-        throw new \RuntimeException('API key FlowGIS tidak memiliki workspace yang dapat digunakan.');
+        throw new \RuntimeException('The FlowGIS API key does not have any usable workspaces.');
     }
 
     public function getLayerGroupsForOwnedWorkspace(): array
@@ -412,7 +412,7 @@ class AstraGisService
         $workspace = $this->getOwnedWorkspace();
         $workspaceName = $workspace['workspace_name'] ?? $workspace['ws_name'] ?? $workspace['name'] ?? null;
         if (!$workspaceName) {
-            throw new \RuntimeException('Workspace milik API key tidak memiliki nama teknis.');
+            throw new \RuntimeException('The workspace associated with the API key does not have a technical name..');
         }
 
         return $this->getLayerGroups((string) $workspaceName);
@@ -423,7 +423,7 @@ class AstraGisService
         $workspace = $this->getOwnedWorkspace();
         $workspaceName = $workspace['workspace_name'] ?? $workspace['ws_name'] ?? $workspace['name'] ?? null;
         if (!$workspaceName) {
-            throw new \RuntimeException('Workspace milik API key tidak memiliki nama teknis.');
+            throw new \RuntimeException('The workspace associated with the API key does not have a technical name.');
         }
 
         return (string) $workspaceName;
@@ -498,7 +498,7 @@ class AstraGisService
         $w = !empty($dims['width']) ? min((int) $dims['width'], 2048) : ($width ?: 1024);
         $h = !empty($dims['height']) ? min((int) $dims['height'], 2048) : ($height ?: 1024);
 
-        $geoserverWms = env('GEOSERVER_INTERNAL_WMS_URL', 'http://geoserver:8080/geoserver/wms');
+        $geoserverWms = env('GEOSERVER_WMS_URL', 'http://geoserver:8080/geoserver/wms');
         $baseUrl = explode('?', $geoserverWms)[0];
 
         $params = [

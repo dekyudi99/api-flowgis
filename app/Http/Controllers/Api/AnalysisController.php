@@ -613,14 +613,14 @@ class AnalysisController extends Controller
                 }
 
                 return response()->json([
-                    'message' => 'Berkas unduhan satelit dari Google Earth Engine telah kadaluarsa (sesi analisis lama). Silakan klik "Run Spatial Analysis" untuk memperbarui hasil sebelum menyimpan.',
+                    'message' => 'The satellite download file from Google Earth Engine has expired (from an old analysis session). Please click "Run Spatial Analysis" to update the results before saving.',
                     'is_expired' => true,
                     'error'   => $e->getMessage()
                 ], 422);
             }
 
             return response()->json([
-                'message' => 'Gagal memublikasikan layer ke GeoServer. Periksa autentikasi API key dan status layanan GeoServer.',
+                'message' => 'Failed to publish the layer to GeoServer. Check the API key authentication and the status of the GeoServer service.',
                 'error'   => $e->getMessage()
             ], 502);
         }
@@ -876,7 +876,7 @@ class AnalysisController extends Controller
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
-                'message' => 'Gagal menghubungi server AstraGIS: ' . $e->getMessage()
+                'message' => 'Failed to connect to the AstraGIS server: ' . $e->getMessage()
             ], 500);
         }
     }

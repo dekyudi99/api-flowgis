@@ -78,7 +78,7 @@ class AoiController extends Controller
                     }
 
                     if (!$kmlGeometryXml) {
-                        return response()->json(['message' => 'Elemen geometri tidak ditemukan di dalam file KML.'], 422);
+                        return response()->json(['message' => 'Geometric elements were not found in the KML file.'], 422);
                     }
 
                     $quotedKml = DB::getPdo()->quote($kmlGeometryXml);

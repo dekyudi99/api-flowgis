@@ -152,7 +152,7 @@ class GeosocialController extends Controller
             if (!$publishedData) {
                 \Log::error("Geosocial upload error: publishing failed via AstraGisService. Details: " . ($lastError ?: "No response from backend"));
                 return response()->json([
-                    'message' => "Gagal mempublikasikan layer ke AstraGIS: " . ($lastError ?: "Koneksi ke backend GIS gagal atau waktu pemrosesan habis."),
+                    'message' => "Failed to publish layer to AstraGIS: " . ($lastError ?: "The connection to the GIS backend failed, or the processing time timed out."),
                     'error' => $lastError
                 ], 500);
             }
@@ -275,13 +275,13 @@ class GeosocialController extends Controller
             $ws = str_contains($layerKey, ':') ? explode(':', $layerKey)[0] : null;
             $astragis->deleteLayer($targetSlug, $ws);
         } catch (\Exception $ex) {
-            \Log::warning("Gagal menghapus layer spasial di GeoServer via Microservice: " . $ex->getMessage());
+            \Log::warning("Failed to delete spatial layer in GeoServer via microservice: " . $ex->getMessage());
         }
 
         $layer->delete();
 
         return response()->json([
-            'message' => 'Layer dan tabel spasial berhasil dihapus.',
+            'message' => 'The spatial layers and tables have been successfully deleted.',
             'deleted_id' => $id,
             'layer_key' => $layerKey
         ]);
@@ -469,12 +469,12 @@ XML;
             $appliedToGeoServer = true;
         } catch (\Exception $ex) {
             $geoLastError = $ex->getMessage();
-            \Log::warning("Gagal menerapkan style visual di GeoServer via Microservice: " . $geoLastError);
+            \Log::warning("Failure to apply visual styles in GeoServer via a microservice: " . $geoLastError);
         }
 
         if (!$appliedToGeoServer) {
             return response()->json([
-                'message' => 'Gagal menerapkan style visual ke GeoServer: ' . ($geoLastError ?: 'Koneksi gagal.'),
+                'message' => 'Failed to apply visual style to GeoServer: ' . ($geoLastError ?: 'Connection failed.'),
                 'error'   => $geoLastError
             ], 422);
         }
@@ -497,7 +497,7 @@ XML;
         ];
 
         return response()->json([
-            'message' => 'Style layer berhasil diperbarui!',
+            'message' => 'Style layer successfully updated!',
             'data' => [
                 'id'               => $layer->id,
                 'name'             => $layer->name,

@@ -98,7 +98,7 @@ class ProjectController extends Controller
         $project = Project::where('id', $id)->where('user_id', $userId)->first();
 
         if (!$project) {
-            return response()->json(['message' => 'Proyek tidak ditemukan.'], 404);
+            return response()->json(['message' => 'Project not found.'], 404);
         }
 
         $validated = $request->validate([

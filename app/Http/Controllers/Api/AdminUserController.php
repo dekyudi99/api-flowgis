@@ -34,7 +34,6 @@ class AdminUserController extends Controller
                 ->orderBy('created_at', 'desc')
                 ->get();
 
-            // Jika database masih sepi, pastikan ada akun admin default
             if ($users->isEmpty()) {
                 $defaultAdmin = User::create([
                     'name'     => 'Administrator FlowGIS',
@@ -196,7 +195,7 @@ class AdminUserController extends Controller
             if ($request->user() && $request->user()->id == $user->id) {
                 return response()->json([
                     'status'  => 'error',
-                    'message' => 'Anda tidak dapat menghapus akun Anda sendiri yang sedang aktif!'
+                    'message' => 'You cannot delete your own account while it is active!'
                 ], 403);
             }
 

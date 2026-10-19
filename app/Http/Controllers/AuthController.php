@@ -19,8 +19,8 @@ class AuthController extends Controller
             'email' => 'required|email|max:255|unique:users,email',
             'password' => 'required|min:8',
         ], [
-            'email.unique' => 'Email ini sudah terdaftar. Silakan gunakan email lain atau langsung masuk (login).',
-            'password.min' => 'Password minimal terdiri dari 8 karakter.',
+            'email.unique' => 'This email is already registered. Please use a different email or log in directly. (login).',
+            'password.min' => 'The password must consist of at least 8 characters.',
         ]);
 
         $user = User::create([
@@ -32,7 +32,7 @@ class AuthController extends Controller
 
         return response()->json([
             'status' => 'success',
-            'message' => 'Registrasi berhasil! Silakan login.',
+            'message' => 'Registration successful! Please log in.',
             'user' => [
                 'id' => $user->id,
                 'name' => $user->name,
@@ -70,7 +70,7 @@ class AuthController extends Controller
         // Kembalikan Response JSON ke Frontend
         return response()->json([
             'status' => 'success',
-            'message' => 'Login berhasil',
+            'message' => 'Login successful',
             'access_token' => $token,
             'token_type' => 'Bearer',
             'user' => [
