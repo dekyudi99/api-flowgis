@@ -80,21 +80,24 @@ class AnalysisController extends Controller
             'weights'         => $validated['weights'] ?? [],
         ];
 
+        // Cek AOI ID dari Dropdown (jika ada)
         if ($aoiId) {
-            // User memilih AOI yang sudah ada dari Dropdown
             $selectedAoi = DB::table('aois')
                 ->select(['id', DB::raw("ST_AsGeoJSON(geometry)::json AS geometry")])
                 ->where('id', $aoiId)
                 ->where('project_id', $id)
                 ->first();
 
-            if (!$selectedAoi) {
-                return response()->json(['message' => 'Selected AOI was not found.'], 404);
+            if ($selectedAoi) {
+                $geometry = json_decode($selectedAoi->geometry, true);
+            } else {
+                // Jika aoi_id tidak ditemukan/invalid untuk project ini, reset ke null agar bisa fallback ke geometry manual
+                $aoiId = null;
             }
-            $geometry = json_decode($selectedAoi->geometry);
+        }
 
-            } elseif (!empty($geometry)) {
-            // User menggambar AOI baru di peta
+        // Jika aoi_id kosong/tidak ditemukan, tetapi membawa data geometry (gambar manual di peta)
+        if (!$aoiId && !empty($geometry)) {
             try {
                 $geoJsonType = ucfirst($aoiType);
                 if (in_array(strtolower($aoiType), ['polygon', 'rectangle'])) {
@@ -112,7 +115,8 @@ class AnalysisController extends Controller
                     ? ['type' => 'Point', 'coordinates' => $geometry['coordinates'] ?? $geometry]
                     : ['type' => $geoJsonType, 'coordinates' => $geometry];
 
-                $quotedGeoJson = DB::getPdo()->quote(json_encode($geoJsonData));
+                $jsonString = json_encode($geoJsonData);
+                $quotedGeoJson = DB::getPdo()->quote($jsonString);
 
                 // Simpan AOI Baru ke DB
                 $newAoiId = DB::table('aois')->insertGetId([
@@ -133,8 +137,9 @@ class AnalysisController extends Controller
                     'error'   => $e->getMessage()
                 ], 500);
             }
-        } else {
-            // Fallback ke AOI terbaru kalau tidak ada pilihan
+        } 
+        //Jika tidak ada aoi_id dan tidak menggambar geometry, fallback ke AOI terbaru di project ini
+        elseif (!$aoiId) {
             $latestAoi = DB::table('aois')
                 ->select(['id', DB::raw("ST_AsGeoJSON(geometry)::json AS geometry")])
                 ->where('project_id', $id)
@@ -144,87 +149,16 @@ class AnalysisController extends Controller
             if (!$latestAoi) {
                 return response()->json(['message' => 'The project does not yet have an AOI. Please select or mark an area first.'], 422);
             }
-            $geometry = json_decode($latestAoi->geometry);
+            $geometry = json_decode($latestAoi->geometry, true);
             $aoiId = $latestAoi->id;
         }
-
-        // if (empty($geometry)) {
-        //     $aoi = DB::table('aois')
-        //         ->select([
-        //             'id',
-        //             'name',
-        //             'area_ha',
-        //             DB::raw("ST_AsGeoJSON(geometry)::json AS geometry")
-        //         ])
-        //         ->where('project_id', $id)
-        //         ->latest()
-        //         ->first();
-
-        //     if (!$aoi) {
-        //         return response()->json(['message' => 'The project does not yet have an AOI. Please mark the area on the map or upload an AOI first.'], 422);
-        //     }
-        //     $geometry = json_decode($aoi->geometry);
-        // } else {
-        //     try {
-        //         $geoJsonType = ucfirst($aoiType);
-                
-        //         if (in_array(strtolower($aoiType), ['polygon', 'rectangle'])) {
-        //             $geoJsonType = 'Polygon';
-                    
-        //             if (is_array($geometry) && isset($geometry[0]) && is_array($geometry[0])) {
-        //                 $firstPoint = $geometry[0][0];
-        //                 $lastPoint = end($geometry[0]);
-                        
-        //                 if ($firstPoint !== $lastPoint) {
-        //                     $geometry[0][] = $firstPoint;
-        //                 }
-        //             }
-        //         }
-
-        //         $geoJsonData = [];
-        //         if (strtolower($aoiType) === 'circle') {
-        //             $geoJsonData = [
-        //                 'type' => 'Point',
-        //                 'coordinates' => $geometry['coordinates'] ?? $geometry
-        //             ];
-        //         } else {
-        //             $geoJsonData = [
-        //                 'type' => $geoJsonType,
-        //                 'coordinates' => $geometry
-        //             ];
-        //         }
-
-        //         $geoJsonString = json_encode($geoJsonData);
-
-        //         // Gunakan DB::getPdo()->quote() untuk escape karakter khusus (termasuk single-quote)
-        //         // agar tidak terjadi SQL error saat koordinat polygon mengandung nilai desimal
-        //         $quotedGeoJson = DB::getPdo()->quote($geoJsonString);
-
-        //         DB::table('aois')->updateOrInsert(
-        //             ['project_id' => $project->id],
-        //             [
-        //                 'name'       => 'AOI - ' . $project->name,
-        //                 'area_ha'    => DB::raw("ST_Area(ST_SetSRID(ST_GeomFromGeoJSON({$quotedGeoJson}), 4326)::geography) / 10000"),
-        //                 'geometry'   => DB::raw("ST_SetSRID(ST_GeomFromGeoJSON({$quotedGeoJson}), 4326)"),
-        //                 'source_type'=> 'drawn_polygon',
-        //                 'created_at' => now(),
-        //                 'updated_at' => now()
-        //             ]
-        //         );
-        //     } catch (\Exception $e) {
-        //         return response()->json([
-        //             'message' => 'Failed to save the AOI area to the database (Format Rejected).',
-        //             'error'   => $e->getMessage()
-        //         ], 500);
-        //     }
-        // }
 
         $flaskUrl = config('services.flask.url');
 
         try {
             $componentName = $validated['component'] ?? str_replace('component_', '', $validated['analysis_type']);
 
-            $response = Http::timeout(180000)->post("{$flaskUrl}/api/v1/compute", [
+            $response = Http::timeout(180)->post("{$flaskUrl}/api/v1/compute", [
                 'project_id'      => $project->id,
                 'analysis_type'   => $validated['analysis_type'],
                 'component'       => $componentName,
@@ -249,27 +183,27 @@ class AnalysisController extends Controller
 
             $resData = $response->json();
 
-            // Simpan data analisis ke database (termasuk download_url & maps untuk preview langsung)
+            // Simpan data analisis ke database
             $analysis = Analysis::create([
                 'project_id'    => $project->id,
                 'aoi_id'        => $aoiId,
                 'type'          => $validated['analysis_type'],
                 'analysis_type' => $validated['analysis_type'],
-                'parameters'    => $analysisParams, // Menyimpan riwayat input tanggal dan bobot
+                'parameters'    => $analysisParams,
                 'status'        => 'completed',
                 'statistics'    => [
-                    'style_sld'     => $resData['style_sld'] ?? null,
-                    'maps'          => $resData['maps'] ?? null, // GEE direct XYZ Tile URLs
-                    'wms_layer'     => null, // Belum disimpan ke GeoServer/AstraGIS
-                    'wms'           => $resData['wms'] ?? null,
-                    'legends'       => $resData['legends'] ?? null,
-                    'statistics'    => $resData['statistics'] ?? null,
-                    'download_url'  => $resData['download_url'] ?? null,
+                    'style_sld'         => $resData['style_sld'] ?? null,
+                    'maps'              => $resData['maps'] ?? null,
+                    'wms_layer'         => null,
+                    'wms'               => $resData['wms'] ?? null,
+                    'legends'           => $resData['legends'] ?? null,
+                    'statistics'        => $resData['statistics'] ?? null,
+                    'download_url'      => $resData['download_url'] ?? null,
                     'component_exports' => $resData['component_exports'] ?? [],
-                    'saved_layers'  => [],
-                    'component'     => $componentName,
-                    'aoi_id'        => $aoiId,
-                    'geometry'      => $geometry,
+                    'saved_layers'      => [],
+                    'component'         => $componentName,
+                    'aoi_id'            => $aoiId,
+                    'geometry'          => $geometry,
                 ],
                 'file_path'     => $resData['download_url'] ?? null, 
             ]);
@@ -277,20 +211,20 @@ class AnalysisController extends Controller
             return response()->json([
                 'message' => 'The analysis was successfully run directly from GEE.',
                 'data'    => [
-                    'id'            => $analysis->id,
-                    'project_id'    => $analysis->project_id,
-                    'analysis_type' => $analysis->analysis_type,
-                    'status'        => $analysis->status,
-                    'file_path'     => $analysis->file_path,
-                    'parameters'    => $analysisParams,
-                    'style_sld'     => $resData['style_sld'] ?? null,
-                    'wms_layer'     => null,
-                    'maps'          => $resData['maps'] ?? null, // URL Tile GEE langsung untuk Leaflet
-                    'legends'       => $resData['legends'] ?? null,
-                    'statistics'    => $resData['statistics'] ?? null,
+                    'id'                => $analysis->id,
+                    'project_id'        => $analysis->project_id,
+                    'analysis_type'     => $analysis->analysis_type,
+                    'status'            => $analysis->status,
+                    'file_path'         => $analysis->file_path,
+                    'parameters'        => $analysisParams,
+                    'style_sld'         => $resData['style_sld'] ?? null,
+                    'wms_layer'         => null,
+                    'maps'              => $resData['maps'] ?? null,
+                    'legends'           => $resData['legends'] ?? null,
+                    'statistics'        => $resData['statistics'] ?? null,
                     'component_exports' => $resData['component_exports'] ?? [],
-                    'saved_layers'  => [],
-                    'is_saved'      => false,
+                    'saved_layers'      => [],
+                    'is_saved'          => false,
                 ]
             ], 200);
 

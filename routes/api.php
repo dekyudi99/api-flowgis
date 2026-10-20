@@ -27,31 +27,6 @@ Route::post('/geosocial/layers/{id}/style', [GeosocialController::class, 'update
 Route::get('/geosocial/layers/points/{pointKey}', [GeosocialController::class, 'getPointGeoJson']);
 Route::post('/geosocial/layers/sync', [GeosocialController::class, 'storeFromPipeline']);
 
-// Admin Management: User Management
-Route::prefix('admin/users')->group(function () {
-    Route::get('/', [AdminUserController::class, 'index']);
-    Route::post('/', [AdminUserController::class, 'store']);
-    Route::put('/{id}', [AdminUserController::class, 'update']);
-    Route::patch('/{id}/role', [AdminUserController::class, 'toggleRole']);
-    Route::delete('/{id}', [AdminUserController::class, 'destroy']);
-});
-
-// Admin Management: CCTV Management
-Route::prefix('admin/cctv')->group(function () {
-    Route::get('/', [CctvController::class, 'index']);
-    Route::post('/', [CctvController::class, 'store']);
-    Route::put('/{id}', [CctvController::class, 'update']);
-    Route::patch('/{id}/toggle', [CctvController::class, 'toggleActive']);
-    Route::delete('/{id}', [CctvController::class, 'destroy']);
-});
-
-// Admin Management: Facilities Management
-Route::prefix('admin/facilities')->group(function () {
-    Route::get('/', [FacilityController::class, 'all']);
-    Route::post('/', [FacilityController::class, 'store']);
-    Route::put('/{id}', [FacilityController::class, 'update']);
-    Route::delete('/{id}', [FacilityController::class, 'destroy']);
-});
 
 // Facilities & CCTV Public Endpoints
 Route::prefix('facilities')->group(function () {
@@ -101,6 +76,34 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/user/layer-groups', [AnalysisController::class, 'createUserLayerGroup']);
     Route::put('/user/layer-groups/{id}', [AnalysisController::class, 'updateUserLayerGroup']);
     Route::delete('/user/layer-groups/{id}', [AnalysisController::class, 'deleteUserLayerGroup']);
+});
+
+Route::middleware(['auth:sanctum', 'admin'])->group(function(){
+    // Admin Management: User Management
+    Route::prefix('admin/users')->group(function () {
+        Route::get('/', [AdminUserController::class, 'index']);
+        Route::post('/', [AdminUserController::class, 'store']);
+        Route::put('/{id}', [AdminUserController::class, 'update']);
+        Route::patch('/{id}/role', [AdminUserController::class, 'toggleRole']);
+        Route::delete('/{id}', [AdminUserController::class, 'destroy']);
+    });
+
+    // Admin Management: CCTV Management
+    Route::prefix('admin/cctv')->group(function () {
+        Route::get('/', [CctvController::class, 'index']);
+        Route::post('/', [CctvController::class, 'store']);
+        Route::put('/{id}', [CctvController::class, 'update']);
+        Route::patch('/{id}/toggle', [CctvController::class, 'toggleActive']);
+        Route::delete('/{id}', [CctvController::class, 'destroy']);
+    });
+
+    // Admin Management: Facilities Management
+    Route::prefix('admin/facilities')->group(function () {
+        Route::get('/', [FacilityController::class, 'all']);
+        Route::post('/', [FacilityController::class, 'store']);
+        Route::put('/{id}', [FacilityController::class, 'update']);
+        Route::delete('/{id}', [FacilityController::class, 'destroy']);
+    });
 });
 
 

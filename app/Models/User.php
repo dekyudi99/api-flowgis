@@ -16,7 +16,7 @@ class User extends Authenticatable
         'email',
         'phone',
         'password',
-        'role', // Ditambahkan untuk Role-Based Access Control (Analis, Admin, dll. di masa depan)
+        'role', 
     ];
 
     protected $hidden = [
@@ -30,5 +30,9 @@ class User extends Authenticatable
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
         ];
+    }
+    public function isAdmin(): bool
+    {
+        return $this->role === 'admin';
     }
 }
