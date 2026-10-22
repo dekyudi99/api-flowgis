@@ -8,6 +8,9 @@ use Illuminate\Support\Str;
 
 class AstraGisService
 {
+    /** GeoServer layer group mode: group is addressable AND its members stay individually addressable. */
+    private const LAYER_GROUP_MODE = 'named';
+
     protected string $baseUrl;
     protected string $apiPrefix;
     protected ?string $apiKey;
@@ -430,10 +433,11 @@ class AstraGisService
     }
 
     /**
-     * Create layer group
+     * Create layer group (GeoServer NAMED mode: member layers stay individually addressable)
      */
     public function createLayerGroup(array $payload): array
     {
+        $payload['mode'] = self::LAYER_GROUP_MODE;
         $res = $this->client()->post("{$this->apiPrefix}/layer-groups", $payload);
         if ($res->failed()) {
             throw new \Exception("Create layer group failed [{$res->status()}]: " . $res->body());
@@ -442,10 +446,11 @@ class AstraGisService
     }
 
     /**
-     * Update layer group
+     * Update layer group (keeps NAMED mode; the microservice defaults a missing mode to 'single')
      */
     public function updateLayerGroup(string $id, array $payload): array
     {
+        $payload['mode'] = self::LAYER_GROUP_MODE;
         $res = $this->client()->put("{$this->apiPrefix}/layer-groups/{$id}", $payload);
         if ($res->failed()) {
             throw new \Exception("Update layer group failed [{$res->status()}]: " . $res->body());

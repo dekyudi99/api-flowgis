@@ -34,16 +34,6 @@ class AdminUserController extends Controller
                 ->orderBy('created_at', 'desc')
                 ->get();
 
-            if ($users->isEmpty()) {
-                $defaultAdmin = User::create([
-                    'name'     => 'Administrator FlowGIS',
-                    'email'    => 'admin@flowgis.com',
-                    'password' => Hash::make('password123'),
-                    'role'     => 'admin',
-                ]);
-                $users = collect([$defaultAdmin]);
-            }
-
             return response()->json([
                 'status' => 'success',
                 'data'   => $users

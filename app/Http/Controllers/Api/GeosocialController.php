@@ -31,6 +31,16 @@ class GeosocialController extends Controller
                     'wms_layers_param' => $g['wms_layers_param'] ?? null,
                     'bbox'             => $g['bbox'] ?? null,
                     'layer_count'      => $g['layer_count'] ?? 0,
+                    'layer_ids'        => $g['layer_ids'] ?? [],
+                    'mode'             => $g['mode'] ?? 'single',
+                    'layers'           => collect($g['layers'] ?? [])
+                        ->map(fn ($l) => [
+                            'id'             => $l['id'] ?? null,
+                            'layer_name'     => $l['layer_name'] ?? null,
+                            'geoserver_name' => $l['geoserver_name'] ?? null,
+                            'workspace_name' => $l['workspace_name'] ?? null,
+                        ])
+                        ->values(),
                 ])
                 ->values();
 
