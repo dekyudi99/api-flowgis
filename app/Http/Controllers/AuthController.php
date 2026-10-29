@@ -13,6 +13,13 @@ class AuthController extends Controller
      */
     public function register(Request $request)
     {
+        if (! config('keycloak.auth_local_enabled', false)) {
+            return response()->json([
+                'code' => 'LOCAL_AUTH_DISABLED',
+                'message' => 'Pendaftaran lokal dinonaktifkan. Silakan gunakan SSO Keycloak.',
+            ], 404);
+        }
+
         $validated = $request->validate([
             'fullname' => 'required|string|max:255',
             'username' => 'nullable|string|max:255',
@@ -44,6 +51,13 @@ class AuthController extends Controller
 
     public function login(Request $request)
     {
+        if (! config('keycloak.auth_local_enabled', false)) {
+            return response()->json([
+                'code' => 'LOCAL_AUTH_DISABLED',
+                'message' => 'Login lokal dinonaktifkan. Silakan gunakan SSO Keycloak.',
+            ], 404);
+        }
+
         // Validasi Input
         $request->validate([
             'email' => 'required|email',
@@ -87,9 +101,22 @@ class AuthController extends Controller
      */
     public function me(Request $request)
     {
+        $user = $request->user();
+        $tokenRoles = $request->attributes->get('keycloak_roles') ?? $user->token_roles ?? [];
+
         return response()->json([
             'status' => 'success',
-            'data' => $request->user()
+            'data' => [
+                'id' => $user->id,
+                'keycloak_sub' => $user->keycloak_sub,
+                'name' => $user->name,
+                'email' => $user->email,
+                'role' => $user->role,
+                'roles' => $tokenRoles ?: [$user->role ?? 'analyst'],
+                'auth_type' => $request->attributes->has('keycloak_roles') ? 'keycloak' : 'sanctum',
+                'created_at' => $user->created_at,
+                'updated_at' => $user->updated_at,
+            ],
         ]);
     }
 
@@ -98,8 +125,10 @@ class AuthController extends Controller
      */
     public function logout(Request $request)
     {
-        // Menghapus token Sanctum yang sedang digunakan pada request ini
-        $request->user()->currentAccessToken()->delete();
+        // Menghapus token Sanctum yang sedang digunakan jika ada (legacy auth)
+        if ($request->user() && method_exists($request->user(), 'currentAccessToken') && $request->user()->currentAccessToken()) {
+            $request->user()->currentAccessToken()->delete();
+        }
 
         return response()->json([
             'message' => 'The user session has ended successfully.'

@@ -15,8 +15,14 @@ class CheckAdmin
      */
     public function handle(Request $request, Closure $next): Response
     {
-        if (! $request->user() || ! $request->user()->isAdmin()) {
+        $user = $request->user();
+        $roles = $request->attributes->get('keycloak_roles') ?? $user?->token_roles ?? [];
+
+        $isAdmin = in_array('admin', $roles, true) || ($user && $user->isAdmin());
+
+        if (! $user || ! $isAdmin) {
             return response()->json([
+                'code' => 'AUTH_FORBIDDEN_ROLE',
                 'message' => 'Access denied. This endpoint can only be accessed by an Admin.'
             ], 403);
         }

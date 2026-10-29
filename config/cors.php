@@ -19,14 +19,19 @@ return [
 
     'allowed_methods' => ['*'],
 
-    'allowed_origins' => [
+    'allowed_origins' => array_filter(array_merge([
+        'http://localhost:5170',
         'http://localhost:5173', 
         'http://localhost:5174', 
         'http://localhost:5175', 
+        'http://localhost:5176', 
+        'http://127.0.0.1:5170', 
         'http://127.0.0.1:5173', 
+        'http://127.0.0.1:5174', 
         'http://127.0.0.1:5175', 
+        'http://127.0.0.1:5176', 
         'https://flowgis.wefgis.com',
-    ],
+    ], explode(',', env('CORS_ALLOWED_ORIGINS', '')))),
 
     'allowed_origins_patterns' => [
         '#^https?://.*\.wefgis\.com$#',

@@ -15,7 +15,9 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->alias([
-            'admin' => CheckAdmin::class,
+            'admin' => \App\Http\Middleware\CheckAdmin::class,
+            'role' => \App\Http\Middleware\RequireRole::class,
+            'require_role' => \App\Http\Middleware\RequireRole::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

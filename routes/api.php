@@ -37,7 +37,13 @@ Route::prefix('facilities')->group(function () {
     Route::get('/cctv/{stationCode}/snapshot', [CctvController::class, 'snapshot']);
 });
 
-Route::middleware('auth:sanctum')->group(function () {
+$humanAuth = config('keycloak.auth_local_enabled', false)
+    ? ['auth:keycloak,sanctum']
+    : ['auth:keycloak'];
+
+Route::middleware($humanAuth)->group(function () {
+    // Profil user yang sedang login (Keycloak / Sanctum)
+    Route::get('/me', [AuthController::class, 'me']);
     
     // Auth (Logout & Cek User)
     Route::prefix('auth')->group(function () {
@@ -78,7 +84,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::delete('/user/layer-groups/{id}', [AnalysisController::class, 'deleteUserLayerGroup']);
 });
 
-Route::middleware(['auth:sanctum', 'admin'])->group(function(){
+Route::middleware(array_merge($humanAuth, ['admin']))->group(function(){
     // Admin Management: User Management
     Route::prefix('admin/users')->group(function () {
         Route::get('/', [AdminUserController::class, 'index']);

@@ -53,6 +53,29 @@ In order to ensure that the Laravel community is welcoming to all, please review
 
 If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
 
-## License
+## Keycloak OIDC Authentication (SSO)
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+Service ini mengimplementasikan custom guard `keycloak` berbasis OpenID Connect (OIDC) JWT dengan alur:
+1. **Validasi Token Access Keycloak:**
+   - Algoritma: **RS256** saja.
+   - JWKS Public Key diambil dari URL internal container (`KEYCLOAK_JWKS_URL`) dan disimpan dalam cache (TTL 10 menit).
+   - Validasi klaim: `iss` (harus sesuai `KEYCLOAK_ISSUER`), `azp` (harus sesuai `KEYCLOAK_CLIENT_ID=flowgis`), `exp` (dengan toleransi leeway), dan hak akses role `app-flowgis` di `realm_access.roles`.
+   - Token tidak valid / kadaluwarsa menghasilkan status **401 Unauthorized**; token valid tanpa role `app-flowgis` menghasilkan **403 Forbidden**.
+2. **Penautan User Lokal & Provisioning:**
+   - Kolom `keycloak_sub` (unique, nullable) pada tabel `users`.
+   - Pencocokan utama via `keycloak_sub`.
+   - Jika belum ada dan `email_verified=true`, mencocokkan email user yang sudah terdaftar dan menautkan `keycloak_sub`.
+   - Jika belum terdaftar, user baru otomatis dibuat dengan role default `analyst` (atau `admin` jika memiliki role realm `admin`).
+3. **Koeksistensi Autentikasi Lama (Sanctum):**
+   - Rute privat mendukung guard ganda `auth:keycloak,sanctum` selama `LEGACY_AUTH_ENABLED=true`.
+
+### Environment Variables Keycloak
+
+| Variabel | Deskripsi | Default Lokal |
+|---|---|---|
+| `KEYCLOAK_ISSUER` | Browser-facing realm issuer | `http://localhost:8080/realms/astra` |
+| `KEYCLOAK_JWKS_URL` | Inter-container JWKS endpoint | `http://keycloak:8080/realms/astra/protocol/openid-connect/certs` |
+| `KEYCLOAK_CLIENT_ID` | Client ID Keycloak | `flowgis` |
+| `KEYCLOAK_REQUIRED_ROLE` | Role wajib untuk akses | `app-flowgis` |
+| `LEGACY_AUTH_ENABLED` | Flag koeksistensi Sanctum | `true` |
+
