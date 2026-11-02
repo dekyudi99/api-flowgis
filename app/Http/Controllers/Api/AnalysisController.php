@@ -827,17 +827,13 @@ class AnalysisController extends Controller
             return response()->json(['message' => 'Unauthenticated.'], 401);
         }
 
-        try {
-            $astragis = app(AstraGisService::class);
-            $groups = $astragis->getLayerGroupsForOwnedWorkspace();
-            return response()->json([
-                'success' => true,
-                'total' => count($groups),
-                'data' => $groups,
-            ], 200);
-        } catch (\Exception $e) {
-            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
-        }
+        // Analysis Results hanya diperuntukkan bagi layer hasil analisis milik pengguna/proyek saat ini.
+        // Layer group global dari AstraGIS (seperti Geosocial) tidak boleh bocor ke sini.
+        return response()->json([
+            'success' => true,
+            'total'   => 0,
+            'data'    => [],
+        ], 200);
     }
 
     /**

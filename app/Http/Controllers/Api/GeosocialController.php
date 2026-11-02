@@ -22,7 +22,23 @@ class GeosocialController extends Controller
         try {
             $groups = app(AstraGisService::class)->getLayerGroupsForOwnedWorkspace();
 
+            // Filter: Pastikan Geosocial Layer Group hanya menampilkan layer publik geosocial,
+            // dan TIDAK PERNAH menampilkan layer hasil analisis user (seperti analysis_* / flood_risk).
             $data = collect($groups)
+                ->filter(function ($g) {
+                    $layers = $g['layers'] ?? [];
+                    foreach ($layers as $l) {
+                        $layerName = strtolower(trim($l['layer_name'] ?? ''));
+                        if (
+                            str_starts_with($layerName, 'analysis_') ||
+                            str_contains($layerName, 'flood_risk') ||
+                            str_contains($layerName, 'rainfall')
+                        ) {
+                            return false;
+                        }
+                    }
+                    return true;
+                })
                 ->map(fn ($g) => [
                     'id'               => $g['id'] ?? null,
                     'name'             => $g['name'] ?? null,
