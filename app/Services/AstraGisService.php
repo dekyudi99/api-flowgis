@@ -478,9 +478,9 @@ class AstraGisService
     }
 
     /**
-     * Download styled GeoTIFF of a raster layer using GeoServer WMS GetMap.
+     * Download styled GeoTIFF of a raster layer using microservice raster clip with WMS fallback.
      */
-    public function downloadStyledLayerGeoTiff(array $layer, ?int $width = 1024, ?int $height = 1024): array
+    public function downloadStyledLayerGeoTiff(array $layer, ?int $width = 1024, ?int $height = 1024, ?array $polygon = null): array
     {
         $ws = $layer['workspace_name'] ?? $this->workspaceName;
         $storeName = $layer['store_name'] ?? $layer['layer_name'] ?? null;
@@ -491,14 +491,49 @@ class AstraGisService
         $styleName = $layer['symbology']['style_name'] ?? ($layer['style_name'] ?? '');
         $bbox = $layer['bbox'] ?? null;
 
-        $minx = 0; $miny = 0; $maxx = 0; $maxy = 0;
+        $minx = null; $miny = null; $maxx = null; $maxy = null;
         if (is_array($bbox)) {
-            $minx = $bbox['left'] ?? $bbox['minx'] ?? $bbox['west'] ?? ($bbox[0] ?? 0);
-            $miny = $bbox['bottom'] ?? $bbox['miny'] ?? $bbox['south'] ?? ($bbox[1] ?? 0);
-            $maxx = $bbox['right'] ?? $bbox['maxx'] ?? $bbox['east'] ?? ($bbox[2] ?? 0);
-            $maxy = $bbox['top'] ?? $bbox['maxy'] ?? $bbox['north'] ?? ($bbox[3] ?? 0);
+            $minx = $bbox['left'] ?? $bbox['minx'] ?? $bbox['west'] ?? ($bbox[0] ?? null);
+            $miny = $bbox['bottom'] ?? $bbox['miny'] ?? $bbox['south'] ?? ($bbox[1] ?? null);
+            $maxx = $bbox['right'] ?? $bbox['maxx'] ?? $bbox['east'] ?? ($bbox[2] ?? null);
+            $maxy = $bbox['top'] ?? $bbox['maxy'] ?? $bbox['north'] ?? ($bbox[3] ?? null);
         }
 
+        $cleanTitle = preg_replace('/[^a-zA-Z0-9_-]/', '_', $layer['display_name'] ?? $storeName);
+        $layerId = $layer['id'] ?? ($layer['layer_id'] ?? null);
+
+        // 1. Prioritaskan microservice raster clip endpoint (menghasilkan 3-Band True Color RGB GeoTIFF)
+        if ($layerId && $minx !== null && $miny !== null && $maxx !== null && $maxy !== null) {
+            try {
+                $clipPayload = [
+                    'bbox' => [(float) $minx, (float) $miny, (float) $maxx, (float) $maxy],
+                    'styled' => true,
+                ];
+                if (!empty($polygon) && is_array($polygon)) {
+                    $clipPayload['polygon'] = $polygon;
+                }
+
+                $res = $this->client(120)->post("{$this->apiPrefix}/layers/{$layerId}/raster/clip", $clipPayload);
+                if ($res->successful() && strlen($res->body()) > 0) {
+                    $filename = "{$cleanTitle}.tif";
+                    $disposition = $res->header('Content-Disposition');
+                    if ($disposition && preg_match('/filename="([^"]+)"/', $disposition, $matches)) {
+                        $filename = $matches[1];
+                    }
+                    return [
+                        'content'      => $res->body(),
+                        'content_type' => $res->header('Content-Type') ?: 'image/tiff',
+                        'filename'     => $filename,
+                    ];
+                }
+                Log::warning("Microservice raster clip returned non-200 status [{$res->status()}], falling back to GeoServer WMS GetMap.");
+            } catch (\Throwable $e) {
+                Log::warning("Microservice raster clip request failed ({$e->getMessage()}), falling back to GeoServer WMS GetMap.");
+            }
+        }
+
+        // 2. Fallback: GeoServer WMS GetMap langsung
+        $minx = $minx ?? 0; $miny = $miny ?? 0; $maxx = $maxx ?? 0; $maxy = $maxy ?? 0;
         $dims = $layer['dimensions'] ?? [];
         $w = !empty($dims['width']) ? min((int) $dims['width'], 2048) : ($width ?: 1024);
         $h = !empty($dims['height']) ? min((int) $dims['height'], 2048) : ($height ?: 1024);
@@ -524,7 +559,6 @@ class AstraGisService
             throw new \RuntimeException("GeoServer WMS GetMap failed [{$resp->status()}]: " . $resp->body());
         }
 
-        $cleanTitle = preg_replace('/[^a-zA-Z0-9_-]/', '_', $layer['display_name'] ?? $storeName);
         return [
             'content'      => $resp->body(),
             'content_type' => $resp->header('Content-Type') ?: 'image/geotiff',
