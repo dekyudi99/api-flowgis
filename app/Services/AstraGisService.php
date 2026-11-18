@@ -510,7 +510,7 @@ class AstraGisService
                     'styled' => true,
                 ];
                 if (!empty($polygon) && is_array($polygon)) {
-                    $clipPayload['polygon'] = $polygon;
+                    $clipPayload['mask_polygon'] = $polygon;
                 }
 
                 $res = $this->client(120)->post("{$this->apiPrefix}/layers/{$layerId}/raster/clip", $clipPayload);
@@ -538,8 +538,8 @@ class AstraGisService
         $w = !empty($dims['width']) ? min((int) $dims['width'], 2048) : ($width ?: 1024);
         $h = !empty($dims['height']) ? min((int) $dims['height'], 2048) : ($height ?: 1024);
 
-        $geoserverWms = env('GEOSERVER_WMS_URL', 'http://geoserver:8080/geoserver/wms');
-        $baseUrl = explode('?', $geoserverWms)[0];
+        $geoserverWms = config('services.geoserver.wms_url', 'http://geoserver:8080/geoserver/wms');
+        $baseUrl = explode('?', (string) $geoserverWms)[0];
 
         $params = [
             'service' => 'WMS',

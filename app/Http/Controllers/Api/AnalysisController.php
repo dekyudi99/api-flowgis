@@ -658,7 +658,31 @@ class AnalysisController extends Controller
             $url = str_replace(':5000', ':5001', $url);
         }
 
-        return redirect()->away($url);
+        try {
+            $remoteResp = Http::timeout(120)->get($url);
+            if ($remoteResp->status() === 401 || $remoteResp->status() === 403) {
+                return response()->json([
+                    'message' => 'The satellite download link from Google Earth Engine has expired. Please save the analysis to GeoServer or re-run the analysis first.',
+                    'is_expired' => true,
+                ], 422);
+            }
+            if ($remoteResp->failed() || strlen($remoteResp->body()) === 0) {
+                return response()->json([
+                    'message' => "Failed to download spatial file from upstream source (HTTP {$remoteResp->status()})."
+                ], 502);
+            }
+
+            return response($remoteResp->body(), 200, [
+                'Content-Type' => $remoteResp->header('Content-Type') ?: 'image/tiff',
+                'Content-Disposition' => 'attachment; filename="project_' . $projectId . '_result.tif"',
+                'Cache-Control' => 'no-cache, no-store, must-revalidate',
+            ]);
+        } catch (\Exception $e) {
+            \Log::error("Project download proxy failed for project [{$id}]: " . $e->getMessage());
+            return response()->json([
+                'message' => 'Failed to download spatial file: ' . $e->getMessage(),
+            ], 502);
+        }
     }
 
     /**
